@@ -1,0 +1,8 @@
+{
+  "appId": "com.sbsalon.manager",
+  "appName": "SB Salon Manager",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

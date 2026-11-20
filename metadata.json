@@ -1,0 +1,6 @@
+{
+  "name": "SB Salon Manager",
+  "description": "Complete Gents Salon Management System with Supabase PostgreSQL, Realtime Queue, Split Billing (Cash/UPI/Udhar), Staff Commissions, Offline Draft Sync, and Public Customer Booking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
