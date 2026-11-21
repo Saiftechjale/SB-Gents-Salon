@@ -42,6 +42,7 @@ import type {
 } from '../types/salon';
 import { Language, t } from '../lib/i18n';
 import { exportReportToExcel, exportReportToPDF, ReportExportOptions } from '../lib/exportReports';
+import { apiFetch } from '../lib/api';
 import { UpiIntentLauncher } from './UpiIntentLauncher';
 import { isValidUpiId } from '../lib/upiIntent';
 import type { OwnerSectionTab } from './OwnerOperationsViews';
@@ -230,7 +231,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
     e.preventDefault();
     if (!editingCustomer) return;
     try {
-      const res = await fetch(`/api/customers/${editingCustomer.id}`, {
+      const res = await apiFetch(`/api/customers/${editingCustomer.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -263,7 +264,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
     }
     setSettlingDue(true);
     try {
-      const res = await fetch('/api/payments/settle-due', {
+      const res = await apiFetch('/api/payments/settle-due', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -300,7 +301,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/staff', {
+      const res = await apiFetch('/api/staff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -329,7 +330,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleUpdateStaff = async (member: StaffMember) => {
     try {
-      const res = await fetch(`/api/staff/${member.id}`, {
+      const res = await apiFetch(`/api/staff/${member.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(member),
@@ -356,7 +357,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/services', {
+      const res = await apiFetch('/api/services', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -384,7 +385,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleUpdateService = async (srv: ServiceItem) => {
     try {
-      const res = await fetch(`/api/services/${srv.id}`, {
+      const res = await apiFetch(`/api/services/${srv.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(srv),
@@ -403,7 +404,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleDeleteService = async (id: string) => {
     try {
-      const res = await fetch(`/api/services/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/services/${id}`, { method: 'DELETE' });
       const json = await res.json();
       if (!res.ok) {
         notify('error', json.error || 'Could not delete service');
@@ -430,7 +431,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/expenses', {
+      const res = await apiFetch('/api/expenses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -459,7 +460,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleDeleteExpense = async (id: string) => {
     try {
-      const res = await fetch(`/api/expenses/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/expenses/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         notify('error', 'Could not delete expense');
         return;
@@ -475,7 +476,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
   // Handlers for Salon Settings
   const handleQuickSaveUpiId = async (newUpiId: string) => {
     try {
-      const res = await fetch('/api/settings', {
+      const res = await apiFetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -502,7 +503,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/settings', {
+      const res = await apiFetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -532,7 +533,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleToggleSlot = async (slotId: string, enabled: boolean) => {
     try {
-      await fetch(`/api/time-slots/${slotId}`, {
+      await apiFetch(`/api/time-slots/${slotId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_enabled: enabled }),
@@ -547,7 +548,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
     e.preventDefault();
     if (!customSlotTime) return;
     try {
-      const res = await fetch('/api/time-slots', {
+      const res = await apiFetch('/api/time-slots', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ slot_time: customSlotTime }),
@@ -567,7 +568,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleDeleteSlot = async (slotId: string) => {
     try {
-      const res = await fetch(`/api/time-slots/${slotId}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/time-slots/${slotId}`, { method: 'DELETE' });
       if (!res.ok) {
         notify('error', 'Could not delete time slot');
         return;
@@ -593,7 +594,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/auth/pins', {
+      const res = await apiFetch('/api/auth/pins', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -640,14 +641,14 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
         .slice(0, 4);
 
       if (salonName.trim() && salonName.trim() !== data.salon.name) {
-        await fetch('/api/settings', {
+        await apiFetch('/api/settings', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ salon_name: salonName.trim() }),
         });
       }
 
-      const res = await fetch('/api/showcase', {
+      const res = await apiFetch('/api/showcase', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -712,7 +713,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
         img.src = rawDataUrl;
       });
 
-      const res = await fetch('/api/showcase/upload-image', {
+      const res = await apiFetch('/api/showcase/upload-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -790,7 +791,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/offers', {
+      const res = await apiFetch('/api/offers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -819,7 +820,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleUpdateOffer = async (offer: SalonOffer) => {
     try {
-      const res = await fetch(`/api/offers/${offer.id}`, {
+      const res = await apiFetch(`/api/offers/${offer.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(offer),
@@ -838,7 +839,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleDeleteOffer = async (id: string) => {
     try {
-      const res = await fetch(`/api/offers/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/offers/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         notify('error', 'Could not delete offer');
         return;
@@ -852,7 +853,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleUpdateReview = async (review: SalonReview) => {
     try {
-      const res = await fetch(`/api/reviews/${review.id}`, {
+      const res = await apiFetch(`/api/reviews/${review.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(review),
@@ -871,7 +872,7 @@ export const OwnerAdminViews: React.FC<OwnerAdminViewsProps> = ({
 
   const handleDeleteReview = async (id: string) => {
     try {
-      const res = await fetch(`/api/reviews/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/reviews/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         notify('error', 'Could not delete review');
         return;

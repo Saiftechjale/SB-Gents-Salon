@@ -14,6 +14,7 @@ import type {
   SalonBootstrapData,
 } from '../types/salon';
 import { Language } from '../lib/i18n';
+import { apiFetch } from '../lib/api';
 
 interface StaffPortalProps {
   data: SalonBootstrapData;
@@ -81,7 +82,7 @@ export const StaffPortal: React.FC<StaffPortalProps> = ({
   const handleUpdateAvailability = async (status: AvailabilityStatus) => {
     if (!currentStaff) return;
     try {
-      const res = await fetch(`/api/staff/${currentStaff.id}/availability`, {
+      const res = await apiFetch(`/api/staff/${currentStaff.id}/availability`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ availability_status: status }),
@@ -100,7 +101,7 @@ export const StaffPortal: React.FC<StaffPortalProps> = ({
 
   const handleUpdateBookingStatus = async (bookingId: string, status: BookingStatus) => {
     try {
-      const res = await fetch(`/api/bookings/${bookingId}/status`, {
+      const res = await apiFetch(`/api/bookings/${bookingId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
@@ -119,7 +120,7 @@ export const StaffPortal: React.FC<StaffPortalProps> = ({
 
   const handleShiftBookingDelay = async (bookingId: string, shiftMinutes: number) => {
     try {
-      const res = await fetch(`/api/bookings/${bookingId}`, {
+      const res = await apiFetch(`/api/bookings/${bookingId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -145,7 +146,7 @@ export const StaffPortal: React.FC<StaffPortalProps> = ({
   const handleMarkAttendance = async (status: 'PRESENT' | 'HALF_DAY' | 'LEAVE') => {
     if (!currentStaff) return;
     try {
-      const res = await fetch('/api/attendance', {
+      const res = await apiFetch('/api/attendance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

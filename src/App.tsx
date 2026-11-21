@@ -35,6 +35,14 @@ import type {
 } from './types/salon';
 import { Language, t } from './lib/i18n';
 import { playAlertChime, sendNativeNotification } from './lib/alerts';
+import {
+  apiFetch,
+  apiUrl,
+  getApiBaseUrl,
+  isPhoneOfflineMode,
+  setApiBaseUrl,
+  setPhoneOfflineMode,
+} from './lib/api';
 import { supabase } from './lib/supabase';
 import {
   cacheSalonStateLocally,
@@ -82,6 +90,9 @@ export default function App() {
 
   const [data, setData] = useState<SalonBootstrapData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [connectionError, setConnectionError] = useState<string>('');
+  const [serverUrlInput, setServerUrlInput] = useState<string>(() => getApiBaseUrl());
+  const [phoneOfflineMode, setPhoneOfflineModeState] = useState<boolean>(() => isPhoneOfflineMode());
   const [offlineDrafts, setOfflineDrafts] = useState<OfflineDraftBill[]>([]);
   const [isSyncingDrafts, setIsSyncingDrafts] = useState<boolean>(false);
 
@@ -130,15 +141,21 @@ export default function App() {
 
   const fetchBootstrapData = useCallback(async () => {
     try {
-      const res = await fetch('/api/bootstrap');
+      const res = await apiFetch('/api/bootstrap');
       if (!res.ok) throw new Error('Failed to load salon database');
       const json = (await res.json()) as SalonBootstrapData;
       setData(json);
+      setConnectionError('');
       await cacheSalonStateLocally(json);
-    } catch {
+    } catch (err) {
       const cached = await getCachedSalonState();
       if (cached) {
         setData(cached);
+        setConnectionError('');
+      } else {
+        setConnectionError(
+          err instanceof Error ? err.message : 'Unable to connect to Salon Server'
+        );
       }
     } finally {
       setLoading(false);
@@ -156,7 +173,7 @@ export default function App() {
     for (const draft of drafts) {
       try {
         await updateOfflineDraftStatus(draft.client_sync_id, 'SYNCING');
-        const res = await fetch('/api/payments/bill', {
+        const res = await apiFetch('/api/payments/bill', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(draft),
@@ -212,17 +229,20 @@ export default function App() {
   }, [syncPendingOfflineDrafts]);
 
   useEffect(() => {
-    const evtSource = new EventSource('/api/events');
-    evtSource.onmessage = (event) => {
-      try {
-        const parsed = JSON.parse(event.data);
-        if (parsed.type && parsed.type !== 'CONNECTED') {
-          fetchBootstrapData();
+    let evtSource: EventSource | null = null;
+    if (!phoneOfflineMode) {
+      evtSource = new EventSource(apiUrl('/api/events'));
+      evtSource.onmessage = (event) => {
+        try {
+          const parsed = JSON.parse(event.data);
+          if (parsed.type && parsed.type !== 'CONNECTED') {
+            fetchBootstrapData();
+          }
+        } catch {
+          // Ignore parse errors
         }
-      } catch {
-        // Ignore parse errors
-      }
-    };
+      };
+    }
 
     let sbChannel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null;
     if (supabase) {
@@ -235,12 +255,12 @@ export default function App() {
     }
 
     return () => {
-      evtSource.close();
+      evtSource?.close();
       if (sbChannel && supabase) {
         supabase.removeChannel(sbChannel);
       }
     };
-  }, [fetchBootstrapData]);
+  }, [fetchBootstrapData, phoneOfflineMode]);
 
   const ownerNotifications = (data?.notifications || []).filter(
     (n) => n.recipient_role === 'OWNER'
@@ -269,7 +289,7 @@ export default function App() {
 
   const handleMarkOwnerNotificationsRead = async () => {
     try {
-      await fetch('/api/notifications/mark-read', {
+      await apiFetch('/api/notifications/mark-read', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: 'OWNER' }),
@@ -340,7 +360,7 @@ export default function App() {
     setPinLoading(true);
     setPinError('');
     try {
-      const res = await fetch('/api/auth/verify-pin', {
+      const res = await apiFetch('/api/auth/verify-pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: showLoginModal, pin: pinInput.trim() }),
@@ -446,6 +466,23 @@ export default function App() {
             </span>
           )}
 
+          {phoneOfflineMode && data && (
+            <button
+              type="button"
+              onClick={() => {
+                setPhoneOfflineMode(false);
+                setPhoneOfflineModeState(false);
+                setData(null);
+                setLoading(false);
+              }}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-300 text-xs font-bold border border-amber-500/30"
+              title="Connect Live Server"
+            >
+              <WifiOff className="w-3 h-3" />
+              <span>Server</span>
+            </button>
+          )}
+
           {role === 'OWNER' && ownerUnlocked && offlineDrafts.length > 0 && (
             <button
               type="button"
@@ -534,15 +571,96 @@ export default function App() {
       )}
 
       {/* Main Content Area */}
-      {loading || !data ? (
+      {loading ? (
         <div className="flex-1 flex items-center justify-center p-12">
           <div className="text-center space-y-2">
             <div className="w-8 h-8 rounded-full border-2 border-amber-500 border-t-transparent animate-spin mx-auto" />
             <div className="text-sm font-medium text-slate-500">
-              Loading {data?.salon.name || 'Salon'}...
+              लोड हो रहा है... (Loading Salon...)
             </div>
           </div>
         </div>
+      ) : !data ? (
+        <main className="flex-1 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 space-y-5 shadow-2xl">
+            <div className="space-y-1.5 text-center">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-500 mx-auto">
+                <WifiOff className="w-6 h-6" />
+              </div>
+              <h2 className="text-xl font-extrabold text-slate-900 dark:text-slate-100">
+                सर्वर से कनेक्ट नहीं हुआ
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+                इस APK के अंदर लाइव सर्वर लिंक नहीं जुड़ा है। लाइव बुकिंग के लिए नीचे अपना <b>Website / Server Link</b> डालें, या अभी फोन में <b>Offline Mode</b> खोलें।
+              </p>
+              {connectionError && (
+                <p className="text-[11px] font-mono text-rose-500 break-words">
+                  {connectionError}
+                </p>
+              )}
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setPhoneOfflineMode(false);
+                setPhoneOfflineModeState(false);
+                setApiBaseUrl(serverUrlInput);
+                setLoading(true);
+                await fetchBootstrapData();
+              }}
+              className="space-y-2.5"
+            >
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                Live Website / Server URL (Optional)
+              </label>
+              <input
+                type="url"
+                value={serverUrlInput}
+                onChange={(e) => setServerUrlInput(e.target.value)}
+                placeholder="https://your-salon-server.com"
+                className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-3 text-sm"
+              />
+              <button
+                type="submit"
+                className="w-full py-3 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 font-bold text-sm hover:opacity-90"
+              >
+                लाइव सर्वर से जोड़ें (Connect Server)
+              </button>
+            </form>
+
+            <div className="relative flex py-1 items-center">
+              <div className="flex-grow border-t border-slate-200 dark:border-slate-800" />
+              <span className="shrink mx-3 text-[11px] font-bold text-slate-400">या / OR</span>
+              <div className="flex-grow border-t border-slate-200 dark:border-slate-800" />
+            </div>
+
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={async () => {
+                  setPhoneOfflineMode(true);
+                  setPhoneOfflineModeState(true);
+                  setLoading(true);
+                  await fetchBootstrapData();
+                }}
+                className="w-full py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm shadow-lg"
+              >
+                अभी फोन में ऐप खोलें (Offline Phone Mode)
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setLoading(true);
+                  await fetchBootstrapData();
+                }}
+                className="w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                दोबारा कोशिश करें (Retry)
+              </button>
+            </div>
+          </div>
+        </main>
       ) : needsPinUnlock ? (
         /* Direct URL PIN Screen for ?portal=owner or ?portal=staff */
         <main className="flex-1 flex items-center justify-center p-4">
@@ -553,7 +671,7 @@ export default function App() {
               setPinLoading(true);
               setPinError('');
               try {
-                const res = await fetch('/api/auth/verify-pin', {
+                const res = await apiFetch('/api/auth/verify-pin', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ role: target, pin: pinInput.trim() }),

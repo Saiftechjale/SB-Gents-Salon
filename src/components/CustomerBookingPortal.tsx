@@ -35,6 +35,7 @@ import type {
 } from '../types/salon';
 import { Language, t } from '../lib/i18n';
 import { playAlertChime, sendNativeNotification } from '../lib/alerts';
+import { apiFetch } from '../lib/api';
 import { UpiIntentLauncher } from './UpiIntentLauncher';
 
 interface CustomerBookingPortalProps {
@@ -584,7 +585,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
   const handleMarkNotificationsRead = async () => {
     if (activeCustomerPhone.length !== 10) return;
     try {
-      await fetch('/api/notifications/mark-read', {
+      await apiFetch('/api/notifications/mark-read', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: activeCustomerPhone }),
@@ -626,7 +627,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
     }
     setOtpLoading(true);
     try {
-      const res = await fetch('/api/otp/request', {
+      const res = await apiFetch('/api/otp/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: digits }),
@@ -659,7 +660,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
     }
     setOtpLoading(true);
     try {
-      const res = await fetch('/api/otp/verify', {
+      const res = await apiFetch('/api/otp/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: digits, otp: otpInput.trim() }),
@@ -711,7 +712,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/bookings', {
+      const res = await apiFetch('/api/bookings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -794,7 +795,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
     }
     setReviewSubmitting(true);
     try {
-      const res = await fetch('/api/reviews', {
+      const res = await apiFetch('/api/reviews', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

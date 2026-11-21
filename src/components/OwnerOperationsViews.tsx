@@ -22,6 +22,7 @@ import type {
   SalonBootstrapData,
 } from '../types/salon';
 import { Language, t } from '../lib/i18n';
+import { apiFetch } from '../lib/api';
 import { UpiIntentLauncher } from './UpiIntentLauncher';
 
 export type OwnerSectionTab =
@@ -249,7 +250,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
   const handleUpdateOwnerAvailability = async (status: AvailabilityStatus) => {
     if (!ownerBarber) return;
     try {
-      const res = await fetch(`/api/staff/${ownerBarber.id}/availability`, {
+      const res = await apiFetch(`/api/staff/${ownerBarber.id}/availability`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ availability_status: status }),
@@ -292,7 +293,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
 
     setBSubmitting(true);
     try {
-      const res = await fetch('/api/bookings', {
+      const res = await apiFetch('/api/bookings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -335,7 +336,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
 
   const handleUpdateBookingStatus = async (bookingId: string, status: BookingStatus) => {
     try {
-      const res = await fetch(`/api/bookings/${bookingId}/status`, {
+      const res = await apiFetch(`/api/bookings/${bookingId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
@@ -365,7 +366,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
   const handleQuickShiftBooking = async (booking: Booking, shiftMinutes: number) => {
     setEditSaving(true);
     try {
-      const res = await fetch(`/api/bookings/${booking.id}`, {
+      const res = await apiFetch(`/api/bookings/${booking.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -404,7 +405,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
     if (!editingBooking) return;
     setEditSaving(true);
     try {
-      const res = await fetch(`/api/bookings/${editingBooking.id}`, {
+      const res = await apiFetch(`/api/bookings/${editingBooking.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -502,7 +503,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
 
     setBillSubmitting(true);
     try {
-      const res = await fetch('/api/payments/bill', {
+      const res = await apiFetch('/api/payments/bill', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -550,7 +551,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
 
   const handleQuickSaveUpiId = async (newUpiId: string) => {
     try {
-      const res = await fetch('/api/settings', {
+      const res = await apiFetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -604,7 +605,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
 
   const handleMarkOwnerAlertsRead = async () => {
     try {
-      await fetch('/api/notifications/mark-read', {
+      await apiFetch('/api/notifications/mark-read', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: 'OWNER' }),
