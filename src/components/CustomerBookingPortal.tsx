@@ -55,7 +55,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
   onRefresh,
   notify,
 }) => {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = new Date().toLocaleDateString('en-CA');
 
   const [screen, setScreen] = useState<CustomerScreen>('HOME');
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
@@ -528,8 +528,8 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
     if (booking.status === 'IN_PROGRESS') {
       fireOnce(
         'chair',
-        `Your Turn Now! (Token #${booking.token_number})`,
-        `${booking.barber_name} is ready for your service now.`
+        `आपकी बारी आ गई! (टोकन #${booking.token_number})`,
+        `${booking.barber_name} आपकी सर्विस के लिए तैयार हैं, कृपया कुर्सी पर आएं।`
       );
       return;
     }
@@ -538,14 +538,14 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
       if (effectiveWaitMins <= 5 || customersAhead === 0) {
         fireOnce(
           `5m_${booking.slot_time}`,
-          `Turn in ~5 mins (Token #${booking.token_number})`,
-          `Please reach ${data.salon.name} now. ${booking.barber_name} is almost ready.`
+          `सिर्फ ~5 मिनट में बारी (टोकन #${booking.token_number})`,
+          `कृपया ${data.salon.name} पहुंचें, ${booking.barber_name} तैयार होने वाले हैं।`
         );
       } else if (effectiveWaitMins <= 15 || customersAhead === 1) {
         fireOnce(
           `15m_${booking.slot_time}`,
-          `Turn in ~${effectiveWaitMins} mins (Token #${booking.token_number})`,
-          `${customersAhead} customer ahead. Get ready for ${booking.slot_time}.`
+          `~${effectiveWaitMins} मिनट में बारी (टोकन #${booking.token_number})`,
+          `आपसे आगे ${customersAhead} ग्राहक हैं। ${booking.slot_time} के लिए तैयार रहें।`
         );
       }
     }
@@ -861,10 +861,13 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
     ];
     const pct = Math.min(100, Math.max(0, ((tracked.stepIndex - 1) / (steps.length - 1)) * 100));
 
-    // Only show alerts created for THIS booking (avoid mixing old completed bookings)
+    // Only show alerts belonging strictly to THIS booking's token and creation time
     const bookingCreatedMs = new Date(tracked.booking.created_at).getTime() - 10000;
+    const tokenPattern = new RegExp(`#${tracked.booking.token_number}(?!\\d)`);
     const thisBookingAlerts = customerNotifications.filter(
-      (n) => new Date(n.created_at).getTime() >= bookingCreatedMs
+      (n) =>
+        new Date(n.created_at).getTime() >= bookingCreatedMs &&
+        tokenPattern.test(n.title)
     );
 
     const statusLine =

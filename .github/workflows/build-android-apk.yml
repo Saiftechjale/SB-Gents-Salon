@@ -30,7 +30,7 @@ jobs:
 
       - name: Install dependencies and build web bundle
         run: |
-          npm install
+          npm install --legacy-peer-deps
           npm run build
 
       - name: Configure Capacitor & Live Server URL (if APP_URL is set)
@@ -38,7 +38,7 @@ jobs:
           APP_URL: ${{ vars.APP_URL || secrets.APP_URL }}
           APP_NAME: ${{ vars.APP_NAME }}
         run: |
-          npm install --no-save @capacitor/core@^6.2.0 @capacitor/cli@^6.2.0 @capacitor/android@^6.2.0
+          npm install --no-save --legacy-peer-deps @capacitor/core@^6.2.0 @capacitor/cli@^6.2.0 @capacitor/android@^6.2.0
           node -e '
             const fs = require("fs");
             const cfg = JSON.parse(fs.readFileSync("capacitor.config.json", "utf8"));

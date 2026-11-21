@@ -1489,8 +1489,8 @@ async function startServer() {
         salon_id: db.salon.id,
         recipient_role: 'CUSTOMER',
         recipient_phone: customer.phone,
-        title: `Booking Confirmed · Token #${tokenNumber}`,
-        message: `Seat reserved with ${assignedBarber.name} for ${booking_date} at ${slot_time}. Live updates will appear here.`,
+        title: `बुकिंग पक्की · टोकन #${tokenNumber}`,
+        message: `${assignedBarber.name} के साथ ${booking_date} को ${slot_time} बजे आपकी सीट बुक हो गई है।`,
         is_read: false,
         created_at: now,
       };
@@ -1538,8 +1538,8 @@ async function startServer() {
         salon_id: db.salon.id,
         recipient_role: 'CUSTOMER',
         recipient_phone: booking.customer_phone,
-        title: `Your Turn Now! (Token #${booking.token_number})`,
-        message: `${booking.barber_name} is ready for your ${booking.services?.map((s) => s.service_name).join(', ') || 'service'} now.`,
+        title: `आपकी बारी आ गई! (टोकन #${booking.token_number})`,
+        message: `${booking.barber_name} आपकी सर्विस के लिए तैयार हैं, कृपया कुर्सी पर आएं।`,
         is_read: false,
         created_at: now,
       };
@@ -1554,8 +1554,8 @@ async function startServer() {
           salon_id: db.salon.id,
           recipient_role: 'CUSTOMER',
           recipient_phone: nextWaiting.customer_phone,
-          title: `You Are Next! (Token #${nextWaiting.token_number})`,
-          message: `Token #${booking.token_number} just started. Please reach ${db.salon.name} for your ${nextWaiting.slot_time} turn.`,
+          title: `आपका नंबर अगला है! (टोकन #${nextWaiting.token_number})`,
+          message: `टोकन #${booking.token_number} का काम शुरू हो गया है। कृपया ${nextWaiting.slot_time} के लिए सैलून पहुंचें।`,
           is_read: false,
           created_at: now,
         };
@@ -1567,8 +1567,8 @@ async function startServer() {
         salon_id: db.salon.id,
         recipient_role: 'CUSTOMER',
         recipient_phone: booking.customer_phone,
-        title: `Booking Cancelled (${booking.reference_code || `#${booking.token_number}`})`,
-        message: `Your appointment for ${booking.booking_date} at ${booking.slot_time} was cancelled.`,
+        title: `बुकिंग रद्द हुई (टोकन #${booking.token_number})`,
+        message: `${booking.booking_date} को ${booking.slot_time} बजे वाली बुकिंग रद्द कर दी गई है।`,
         is_read: false,
         created_at: now,
       });
@@ -1638,10 +1638,10 @@ async function startServer() {
 
     const changes: string[] = [];
     if (booking.slot_time !== oldTime || booking.booking_date !== oldDate) {
-      changes.push(`New Time: ${booking.slot_time} (${booking.booking_date})`);
+      changes.push(`नया समय: ${booking.slot_time} (${booking.booking_date})`);
     }
     if (booking.total_amount !== oldPrice) {
-      changes.push(`Updated Price: ₹${booking.total_amount}`);
+      changes.push(`नया बिल: ₹${booking.total_amount}`);
     }
     const reasonText = delay_reason ? String(delay_reason).trim() : '';
 
@@ -1652,10 +1652,10 @@ async function startServer() {
       recipient_phone: booking.customer_phone,
       title:
         booking.slot_time !== oldTime || booking.booking_date !== oldDate
-          ? `Timing Updated · Token #${booking.token_number}`
-          : `Booking Updated · Token #${booking.token_number}`,
-      message: `${changes.join(' · ') || `Appointment at ${booking.slot_time}`}${
-        reasonText ? ` — ${reasonText}` : ' — Salon updated your turn timing.'
+          ? `समय बदला · टोकन #${booking.token_number}`
+          : `बुकिंग अपडेट · टोकन #${booking.token_number}`,
+      message: `${changes.join(' · ') || `बुकिंग समय: ${booking.slot_time}`}${
+        reasonText ? ` — ${reasonText}` : ' — सैलून ने आपका समय अपडेट किया है।'
       }`,
       is_read: false,
       created_at: now,
