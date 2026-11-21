@@ -29,10 +29,12 @@ import {
   X,
 } from 'lucide-react';
 import type {
+  Booking,
   BookingPreference,
   SalonBootstrapData,
 } from '../types/salon';
 import { Language, t } from '../lib/i18n';
+import { playAlertChime, sendNativeNotification } from '../lib/alerts';
 import { UpiIntentLauncher } from './UpiIntentLauncher';
 
 interface CustomerBookingPortalProps {
@@ -56,7 +58,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
   const todayStr = new Date().toISOString().slice(0, 10);
 
   const [screen, setScreen] = useState<CustomerScreen>('HOME');
-  const [wizardStep, setWizardStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
   const [slideIdx, setSlideIdx] = useState(0);
   const [failedSlides, setFailedSlides] = useState<Record<number, boolean>>({});
   const [showOfferPopup, setShowOfferPopup] = useState(false);
@@ -359,18 +361,42 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
     };
   }, [data.bookings, todayStr, activeStaffList]);
 
-  // Active Customer Phone for Live Notifications & Active Appointment Banner
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Active Customer Phone for Personal Delivery-Style Tracking & Notifications
+  const [trackedPhone, setTrackedPhone] = useState<string>(() => {
+    if (typeof localStorage === 'undefined') return '';
+    return localStorage.getItem('sb_customer_phone') || '';
+  });
+  const [quickTrackInput, setQuickTrackInput] = useState<string>('');
+
   const activeCustomerPhone = useMemo(() => {
     const candidates = [
       confirmedBooking?.customer_phone,
-      lookupPhone.replace(/\D/g, ''),
-      customerPhone.replace(/\D/g, ''),
-      typeof localStorage !== 'undefined' ? localStorage.getItem('sb_customer_phone') || '' : '',
+      trackedPhone.replace(/\D/g, ''),
     ];
     return candidates.find((p) => p && p.length === 10) || '';
-  }, [confirmedBooking?.customer_phone, lookupPhone, customerPhone]);
+  }, [confirmedBooking?.customer_phone, trackedPhone]);
 
-  // Customer Live Notifications (filtered to this customer's phone)
+  const handleSetTrackedPhone = (phone: string) => {
+    const digits = phone.replace(/\D/g, '').slice(0, 10);
+    setTrackedPhone(digits);
+    setLookupPhone(digits);
+    if (typeof localStorage !== 'undefined') {
+      if (digits.length === 10) {
+        localStorage.setItem('sb_customer_phone', digits);
+      } else {
+        localStorage.removeItem('sb_customer_phone');
+      }
+    }
+  };
+
+  // Customer Live Notifications (strictly filtered to this customer's tracked phone)
   const customerNotifications = useMemo(() => {
     if (activeCustomerPhone.length !== 10) return [];
     return data.notifications.filter(
@@ -383,7 +409,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
     [customerNotifications]
   );
 
-  // Live toast + browser Notification when salon shifts timing or starts chair
+  // Live toast + chime + native Notification when salon shifts timing or starts chair
   useEffect(() => {
     if (!initializedNotifRef.current) {
       for (const n of customerNotifications) {
@@ -397,58 +423,133 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
       if (!seenNotifIdsRef.current.has(n.id)) {
         seenNotifIdsRef.current.add(n.id);
         if (!n.is_read) {
+          playAlertChime('customer');
           notify('success', `${n.title}: ${n.message}`);
-          if (
-            typeof Notification !== 'undefined' &&
-            Notification.permission === 'granted'
-          ) {
-            try {
-              new Notification(`${data.salon.name} — ${n.title}`, {
-                body: n.message,
-              });
-            } catch {
-              // Ignore browser notification errors in restricted iframes
-            }
-          }
+          sendNativeNotification(`${data.salon.name} — ${n.title}`, n.message);
         }
       }
     }
   }, [customerNotifications, data.salon.name, notify]);
 
-  // Customer's Active Appointment Today (Live Timing & Queue Position)
+  // Customer's Tracked Appointment (active WAITING / IN_PROGRESS, or latest COMPLETED today)
   const myActiveAppointment = useMemo(() => {
     if (activeCustomerPhone.length !== 10) return null;
-    const active = data.bookings
-      .filter(
-        (b) =>
-          b.customer_phone === activeCustomerPhone &&
-          (b.status === 'IN_PROGRESS' || b.status === 'WAITING')
-      )
+    const customerBookings = data.bookings.filter(
+      (b) => b.customer_phone === activeCustomerPhone && b.status !== 'CANCELLED'
+    );
+    const active = customerBookings
+      .filter((b) => b.status === 'IN_PROGRESS' || b.status === 'WAITING')
       .sort((a, b) => a.booking_date.localeCompare(b.booking_date) || a.token_number - b.token_number);
 
-    const booking = active.find((b) => b.booking_date === todayStr) || active[0];
+    const booking =
+      active.find((b) => b.booking_date === todayStr) ||
+      active[0] ||
+      customerBookings
+        .filter((b) => b.booking_date === todayStr && b.status === 'COMPLETED')
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+
     if (!booking) return null;
 
     const aheadList =
-      booking.booking_date === todayStr
+      booking.booking_date === todayStr && booking.status === 'WAITING'
         ? data.bookings.filter(
             (b) =>
               b.booking_date === todayStr &&
-              b.status === 'WAITING' &&
+              (b.status === 'WAITING' || b.status === 'IN_PROGRESS') &&
               b.token_number < booking.token_number
           )
         : [];
-    const estWaitMins = aheadList.reduce((sum, b) => {
+    const queueWaitMins = aheadList.reduce((sum, b) => {
       const dur = b.services?.reduce((acc, s) => acc + Number(s.duration_minutes || 30), 0) || 30;
       return sum + dur;
     }, 0);
 
+    // Scheduled slot countdown for today's booking
+    let minsUntilSlot: number | null = null;
+    if (booking.booking_date === todayStr && /^\d{2}:\d{2}$/.test(booking.slot_time)) {
+      const [hh, mm] = booking.slot_time.split(':').map(Number);
+      const slotDt = new Date(nowTick);
+      slotDt.setHours(hh, mm, 0, 0);
+      minsUntilSlot = Math.round((slotDt.getTime() - nowTick) / 60000);
+    }
+
+    const effectiveWaitMins =
+      booking.status === 'IN_PROGRESS' || booking.status === 'COMPLETED'
+        ? 0
+        : booking.booking_date !== todayStr
+        ? null
+        : minsUntilSlot !== null && minsUntilSlot > 0
+        ? Math.max(queueWaitMins, minsUntilSlot)
+        : queueWaitMins;
+
+    // 5-Step Delivery Progress Stage:
+    // 1: Booked (default / future date), 2: In Queue (today waiting),
+    // 3: Get Ready (<=15 mins or <=1 ahead), 4: On Chair, 5: Done
+    let stepIndex = 1;
+    if (booking.status === 'COMPLETED') {
+      stepIndex = 5;
+    } else if (booking.status === 'IN_PROGRESS') {
+      stepIndex = 4;
+    } else if (booking.booking_date > todayStr) {
+      stepIndex = 1;
+    } else if (
+      booking.booking_date === todayStr &&
+      (aheadList.length <= 1 || (effectiveWaitMins !== null && effectiveWaitMins <= 15))
+    ) {
+      stepIndex = 3;
+    } else {
+      stepIndex = 2;
+    }
+
     return {
       booking,
       customersAhead: aheadList.length,
-      estWaitMins,
+      estWaitMins: queueWaitMins,
+      effectiveWaitMins,
+      stepIndex,
     };
-  }, [activeCustomerPhone, data.bookings, todayStr]);
+  }, [activeCustomerPhone, data.bookings, todayStr, nowTick]);
+
+  // Automatic Proximity Timing Notifications as Customer's Turn Gets Closer
+  useEffect(() => {
+    if (!myActiveAppointment || typeof localStorage === 'undefined') return;
+    const { booking, customersAhead, effectiveWaitMins } = myActiveAppointment;
+    if (booking.booking_date !== todayStr) return;
+
+    const fireOnce = (keySuffix: string, title: string, msg: string) => {
+      const key = `sb_prox_${booking.id}_${keySuffix}`;
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, '1');
+      playAlertChime('customer');
+      notify('success', `${title}: ${msg}`);
+      sendNativeNotification(`${data.salon.name} — ${title}`, msg);
+    };
+
+    if (booking.status === 'IN_PROGRESS') {
+      fireOnce(
+        'chair',
+        `Your Turn Now! (Token #${booking.token_number})`,
+        `${booking.barber_name} is ready for your service now.`
+      );
+      return;
+    }
+
+    if (booking.status === 'WAITING' && effectiveWaitMins !== null) {
+      if (effectiveWaitMins <= 5 || customersAhead === 0) {
+        fireOnce(
+          `5m_${booking.slot_time}`,
+          `Turn in ~5 mins (Token #${booking.token_number})`,
+          `Please reach ${data.salon.name} now. ${booking.barber_name} is almost ready.`
+        );
+      } else if (effectiveWaitMins <= 15 || customersAhead === 1) {
+        fireOnce(
+          `15m_${booking.slot_time}`,
+          `Turn in ~${effectiveWaitMins} mins (Token #${booking.token_number})`,
+          `${customersAhead} customer ahead. Get ready for ${booking.slot_time}.`
+        );
+      }
+    }
+  }, [myActiveAppointment, todayStr, data.salon.name, notify]);
 
   // Customer My Bookings lookup
   const customerLookupData = useMemo(() => {
@@ -464,16 +565,16 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
 
   const handleEnableBrowserAlerts = async () => {
     if (typeof Notification === 'undefined') {
-      notify('error', 'Live browser alerts are not supported on this device.');
+      notify('error', 'Live alerts are not supported on this device.');
       return;
     }
     try {
       const perm = await Notification.requestPermission();
       setNotifPermission(perm);
       if (perm === 'granted') {
-        notify('success', 'Live turn & timing alerts enabled!');
+        notify('success', 'Turn & timing alerts enabled!');
       } else {
-        notify('error', 'Alert permission was dismissed. In-app alerts will still appear here.');
+        notify('error', 'Alert permission dismissed. In-app alerts will still show here.');
       }
     } catch {
       notify('error', 'Could not enable browser notifications.');
@@ -635,9 +736,7 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
         return;
       }
 
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('sb_customer_phone', cleanPhone);
-      }
+      handleSetTrackedPhone(cleanPhone);
       setConfirmedBooking({
         id: json.booking.id,
         reference_code: json.booking.reference_code,
@@ -650,7 +749,6 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
         customer_phone: json.booking.customer_phone,
         services_names: selectedServices.map((s) => s.name).join(', '),
       });
-      setLookupPhone(cleanPhone);
       setSelectedSlot('');
       setOtpVerifiedToken(null);
       setOtpSent(false);
@@ -746,6 +844,176 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
       : bookingPreference === 'SPECIFIC_STAFF'
       ? activeStaffList.find((s) => s.id === preferredBarberId)?.name || 'Selected Barber'
       : 'Any Available Barber';
+
+  const renderDeliveryTracker = (tracked: {
+    booking: Booking;
+    customersAhead: number;
+    estWaitMins: number;
+    effectiveWaitMins: number | null;
+    stepIndex: number;
+  }) => {
+    const steps = [
+      { step: 1, label: 'बुक हुआ' },
+      { step: 2, label: 'लाइन में' },
+      { step: 3, label: 'तैयार रहें' },
+      { step: 4, label: 'आपकी बारी' },
+      { step: 5, label: 'पूरा हुआ' },
+    ];
+    const pct = Math.min(100, Math.max(0, ((tracked.stepIndex - 1) / (steps.length - 1)) * 100));
+
+    // Only show alerts created for THIS booking (avoid mixing old completed bookings)
+    const bookingCreatedMs = new Date(tracked.booking.created_at).getTime() - 10000;
+    const thisBookingAlerts = customerNotifications.filter(
+      (n) => new Date(n.created_at).getTime() >= bookingCreatedMs
+    );
+
+    const statusLine =
+      tracked.booking.status === 'COMPLETED'
+        ? 'काम पूरा हो गया! धन्यवाद'
+        : tracked.booking.status === 'IN_PROGRESS'
+        ? 'आपकी बारी आ गई है! कृपया कुर्सी पर आएं'
+        : tracked.booking.booking_date > todayStr
+        ? `तारीख: ${tracked.booking.booking_date} · समय पर अपने आप अपडेट होगा`
+        : tracked.stepIndex === 3
+        ? `तैयार रहें! आपकी बारी ~${tracked.effectiveWaitMins ?? tracked.estWaitMins} मिनट में आने वाली है`
+        : `आपसे आगे ${tracked.customersAhead} लोग हैं · लगभग ~${tracked.effectiveWaitMins ?? tracked.estWaitMins} मिनट`;
+
+    return (
+      <div className="rounded-3xl bg-white dark:bg-slate-900 border-2 border-amber-500/50 p-5 space-y-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-13 h-13 px-2 rounded-2xl bg-amber-500 text-slate-950 font-mono font-extrabold text-lg flex items-center justify-center shrink-0 tabular-nums">
+              #{tracked.booking.token_number}
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-extrabold text-amber-600 dark:text-amber-400">
+                  {tracked.booking.customer_name} · लाइव ट्रैकिंग
+                </span>
+                {tracked.effectiveWaitMins !== null && tracked.booking.status === 'WAITING' && (
+                  <span className="px-2.5 py-0.5 rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-300 font-mono text-xs font-extrabold tabular-nums">
+                    ~{tracked.effectiveWaitMins} मिनट
+                  </span>
+                )}
+              </div>
+              <div className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-slate-100 mt-0.5">
+                {tracked.booking.booking_date} ·{' '}
+                <span className="font-mono text-amber-600 dark:text-amber-400 tabular-nums">
+                  {tracked.booking.slot_time}
+                </span>{' '}
+                · {tracked.booking.barber_name}
+              </div>
+              <div className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 mt-0.5">
+                {statusLine}
+                {tracked.booking.notes ? ` · ${tracked.booking.notes}` : ''}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {notifPermission === 'default' && (
+              <button
+                type="button"
+                onClick={handleEnableBrowserAlerts}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 text-slate-950 font-extrabold text-xs min-h-[38px]"
+              >
+                <BellRing className="w-4 h-4" />
+                <span>अलर्ट चालू करें</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => handleSetTrackedPhone('')}
+              className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 hover:text-rose-500 min-h-[38px]"
+            >
+              नंबर बदलें
+            </button>
+          </div>
+        </div>
+
+        {/* Zomato / Delivery-Style Connected Progress Stepper */}
+        <div className="pt-2 pb-1">
+          <div className="relative flex items-start justify-between">
+            <div className="absolute left-5 right-5 top-4 h-1.5 bg-slate-200 dark:bg-slate-800 rounded-full" />
+            <div
+              className="absolute left-5 top-4 h-1.5 bg-amber-500 rounded-full transition-all duration-500"
+              style={{ width: `calc(${pct}% - ${pct === 100 ? '2.5rem' : '0rem'})` }}
+            />
+            {steps.map((st) => {
+              const done = tracked.stepIndex > st.step;
+              const current = tracked.stepIndex === st.step;
+              return (
+                <div key={st.step} className="relative z-10 flex flex-col items-center flex-1 text-center">
+                  <div
+                    className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-extrabold border-2 transition-all ${
+                      done
+                        ? 'bg-emerald-500 border-emerald-500 text-white'
+                        : current
+                        ? 'bg-amber-500 border-amber-400 text-slate-950 ring-4 ring-amber-500/25'
+                        : 'bg-white dark:bg-slate-950 border-slate-300 dark:border-slate-700 text-slate-400'
+                    }`}
+                  >
+                    {done ? <Check className="w-4 h-4" /> : st.step}
+                  </div>
+                  <span
+                    className={`mt-1.5 text-[11px] sm:text-xs font-extrabold leading-tight ${
+                      current
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : done
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-slate-400'
+                    }`}
+                  >
+                    {st.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Alerts strictly for THIS booking */}
+        {thisBookingAlerts.length > 0 && (
+          <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-extrabold flex items-center gap-1.5 text-slate-700 dark:text-slate-200">
+                <Bell className="w-3.5 h-3.5 text-amber-500" />
+                <span>ताज़ा अपडेट ({thisBookingAlerts.length})</span>
+              </span>
+              {unreadNotificationsCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleMarkNotificationsRead}
+                  className="text-xs font-extrabold text-amber-600 dark:text-amber-400 hover:underline"
+                >
+                  Mark Read
+                </button>
+              )}
+            </div>
+            <div className="space-y-1.5 max-h-28 overflow-y-auto">
+              {thisBookingAlerts.slice(0, 2).map((n) => (
+                <div
+                  key={n.id}
+                  className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <span className="font-extrabold">{n.title}: </span>
+                    <span className="text-slate-600 dark:text-slate-300">{n.message}</span>
+                  </div>
+                  <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                    {new Date(n.created_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20">
@@ -902,137 +1170,74 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                 </div>
               )}
 
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-1">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
                 <button
                   type="button"
                   onClick={() => startWizardWithOptionalService()}
-                  className="flex-1 flex items-center justify-center gap-2 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-base py-3.5 px-6 min-h-[52px] transition-colors shadow-sm"
+                  className="flex-1 flex items-center justify-center gap-2 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-base sm:text-lg py-4 px-6 min-h-[56px] transition-colors shadow-sm"
                 >
                   <Calendar className="w-5 h-5" />
-                  <span>{t(lang, 'bookNow')}</span>
+                  <span>{lang === 'hi' ? 'बुकिंग करें' : 'Book Now / बुक करें'}</span>
                 </button>
 
                 <a
                   href={salonGeneralWhatsAppUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm py-3.5 px-5 min-h-[52px] transition-colors"
+                  className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm sm:text-base py-4 px-5 min-h-[56px] transition-colors"
                 >
                   <MessageCircle className="w-5 h-5" />
-                  <span>{t(lang, 'whatsappSalon')}</span>
+                  <span>WhatsApp से बुक करें</span>
                 </a>
 
                 {activeOffers.length > 0 && (
                   <button
                     type="button"
                     onClick={() => setShowOfferPopup(true)}
-                    className="flex items-center justify-center gap-2 rounded-2xl border-2 border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-bold text-sm py-3.5 px-4 min-h-[52px] transition-colors"
+                    className="flex items-center justify-center gap-2 rounded-2xl border-2 border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-extrabold text-sm sm:text-base py-4 px-4 min-h-[56px] transition-colors"
                   >
                     <Gift className="w-5 h-5" />
-                    <span>Offers ({activeOffers.length})</span>
+                    <span>ऑफ़र ({activeOffers.length})</span>
                   </button>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Active Appointment Live Turn Tracker + Live Salon Notifications */}
-          {myActiveAppointment && (
-            <div className="rounded-3xl bg-amber-500/10 border-2 border-amber-500/40 p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-2xl bg-amber-500 text-slate-950 font-mono font-extrabold text-base flex items-center justify-center shrink-0 tabular-nums">
-                    #{myActiveAppointment.booking.token_number}
-                  </div>
-                  <div>
-                    <div className="text-xs font-bold text-amber-700 dark:text-amber-300">
-                      {myActiveAppointment.booking.status === 'IN_PROGRESS'
-                        ? 'Your Turn Now — Chair Ready!'
-                        : 'Your Active Appointment'}
-                    </div>
-                    <div className="text-base font-extrabold text-slate-900 dark:text-slate-100">
-                      {myActiveAppointment.booking.booking_date} at{' '}
-                      <span className="font-mono text-amber-700 dark:text-amber-400 tabular-nums">
-                        {myActiveAppointment.booking.slot_time}
-                      </span>{' '}
-                      · {myActiveAppointment.booking.barber_name}
-                    </div>
-                    <div className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                      {myActiveAppointment.booking.status === 'IN_PROGRESS'
-                        ? 'Barber is ready for you now.'
-                        : `${myActiveAppointment.customersAhead} customer(s) ahead · Est. wait ~${myActiveAppointment.estWaitMins} mins`}
-                      {myActiveAppointment.booking.notes
-                        ? ` · Note: ${myActiveAppointment.booking.notes}`
-                        : ''}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  {notifPermission === 'default' && (
-                    <button
-                      type="button"
-                      onClick={handleEnableBrowserAlerts}
-                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-amber-500 text-white dark:text-slate-950 font-bold text-xs min-h-[38px]"
-                    >
-                      <BellRing className="w-3.5 h-3.5" />
-                      <span>Enable Turn Alerts</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setScreen('QUEUE')}
-                    className="px-3.5 py-2 rounded-xl border border-amber-500/40 bg-white dark:bg-slate-900 text-xs font-bold min-h-[38px]"
-                  >
-                    Live Queue
-                  </button>
-                </div>
+          {/* Personal Delivery-Style Step Tracker (Only visible for this customer's tracked number) */}
+          {myActiveAppointment ? (
+            renderDeliveryTracker(myActiveAppointment)
+          ) : (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const digits = quickTrackInput.replace(/\D/g, '').slice(0, 10);
+                if (digits.length !== 10) {
+                  notify('error', 'सही 10 अंकों का मोबाइल नंबर डालें');
+                  return;
+                }
+                handleSetTrackedPhone(digits);
+                setQuickTrackInput('');
+              }}
+              className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 flex flex-col sm:flex-row sm:items-center gap-3"
+            >
+              <div className="text-sm font-extrabold text-slate-800 dark:text-slate-100 shrink-0">
+                मेरी बुकिंग ट्रैक करें:
               </div>
-            </div>
-          )}
-
-          {customerNotifications.length > 0 && (
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-sm font-bold">
-                  <Bell className="w-4 h-4 text-amber-500" />
-                  <span>Live Updates &amp; Timing Alerts</span>
-                  {unreadNotificationsCount > 0 && (
-                    <span className="px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 text-[11px] font-extrabold tabular-nums">
-                      {unreadNotificationsCount} new
-                    </span>
-                  )}
-                </div>
-                {unreadNotificationsCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleMarkNotificationsRead}
-                    className="text-xs font-semibold text-amber-600 dark:text-amber-400 hover:underline"
-                  >
-                    Mark Read
-                  </button>
-                )}
-              </div>
-              <div className="divide-y divide-slate-200 dark:divide-slate-800 max-h-44 overflow-y-auto">
-                {customerNotifications.slice(0, 4).map((n) => (
-                  <div
-                    key={n.id}
-                    className={`py-2 text-xs ${!n.is_read ? 'font-semibold' : 'opacity-80'}`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-slate-900 dark:text-slate-100">{n.title}</span>
-                      <span className="font-mono text-[10px] text-slate-400 shrink-0">
-                        {new Date(n.created_at).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </span>
-                    </div>
-                    <div className="text-slate-600 dark:text-slate-400 mt-0.5">{n.message}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
+              <input
+                type="tel"
+                placeholder="10 अंकों का मोबाइल नंबर डालें"
+                value={quickTrackInput}
+                onChange={(e) => setQuickTrackInput(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                className="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono font-bold"
+              />
+              <button
+                type="submit"
+                className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm min-h-[42px] shrink-0"
+              >
+                लाइव देखें
+              </button>
+            </form>
           )}
 
           {/* Quick Status & Tracking Cards */}
@@ -1040,19 +1245,19 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
             <button
               type="button"
               onClick={() => setScreen('QUEUE')}
-              className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 text-left hover:border-amber-500 transition-colors flex items-center justify-between min-h-[84px]"
+              className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 text-left hover:border-amber-500 transition-colors flex items-center justify-between min-h-[88px]"
             >
               <div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">
-                  {t(lang, 'liveQueue')}
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">
+                  लाइव लाइन (Queue)
                 </div>
-                <div className="text-lg font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                <div className="text-lg sm:text-xl font-extrabold text-slate-900 dark:text-slate-100 mt-0.5">
                   {todayQueue.currentServing
-                    ? `Serving Token #${todayQueue.currentServing.token_number}`
-                    : 'No Queue — Seat Available'}
+                    ? `टोकन #${todayQueue.currentServing.token_number} चल रहा है`
+                    : 'कुर्सी खाली है'}
                 </div>
-                <div className="text-xs text-amber-600 dark:text-amber-400 font-medium mt-0.5">
-                  {todayQueue.waitingList.length} waiting · ~{todayQueue.estWaitMins} {t(lang, 'mins')} wait
+                <div className="text-xs sm:text-sm text-amber-600 dark:text-amber-400 font-bold mt-0.5">
+                  {todayQueue.waitingList.length} इंतज़ार में · ~{todayQueue.estWaitMins} मिनट
                 </div>
               </div>
               <ArrowRight className="w-5 h-5 text-slate-400 shrink-0" />
@@ -1061,12 +1266,12 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
             <button
               type="button"
               onClick={() => setScreen('MY_BOOKINGS')}
-              className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 text-left hover:border-amber-500 transition-colors flex items-center justify-between min-h-[84px]"
+              className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 text-left hover:border-amber-500 transition-colors flex items-center justify-between min-h-[88px]"
             >
               <div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">Bookings</div>
-                <div className="text-lg font-bold text-slate-900 dark:text-slate-100 mt-0.5">
-                  My Bookings &amp; History
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">बुकिंग</div>
+                <div className="text-lg sm:text-xl font-extrabold text-slate-900 dark:text-slate-100 mt-0.5">
+                  मेरी बुकिंग और हिस्ट्री
                 </div>
               </div>
               <ArrowRight className="w-5 h-5 text-slate-400 shrink-0" />
@@ -1076,11 +1281,11 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
           {/* Services & Prices Menu on Home Screen */}
           <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">
-                Services &amp; Prices
+              <h2 className="text-xl font-extrabold text-slate-900 dark:text-slate-100">
+                सर्विस और रेट (Services)
               </h2>
-              <span className="text-xs font-mono text-slate-500 tabular-nums">
-                {activeServices.length} services
+              <span className="text-xs font-mono font-bold text-slate-500 tabular-nums">
+                {activeServices.length} सर्विस
               </span>
             </div>
 
@@ -1090,21 +1295,21 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                   key={srv.id}
                   type="button"
                   onClick={() => startWizardWithOptionalService(srv.id)}
-                  className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-amber-500 text-left transition-all flex items-center justify-between min-h-[68px]"
+                  className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-amber-500 text-left transition-all flex items-center justify-between min-h-[74px]"
                 >
                   <div>
-                    <div className="font-bold text-sm text-slate-900 dark:text-slate-100">
-                      {lang === 'hi' && srv.name_hi ? srv.name_hi : srv.name}
+                    <div className="font-extrabold text-base text-slate-900 dark:text-slate-100">
+                      {srv.name_hi ? `${srv.name_hi} (${srv.name})` : srv.name}
                     </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                      {lang === 'hi' ? srv.name : srv.name_hi || srv.category} · {srv.duration_minutes} mins
+                    <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 mt-0.5">
+                      {srv.duration_minutes} मिनट
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="font-mono text-lg font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
+                    <div className="font-mono text-xl font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
                       ₹{srv.price}
                     </div>
-                    <div className="text-[11px] font-semibold text-slate-500">Book &rarr;</div>
+                    <div className="text-xs font-bold text-amber-600 dark:text-amber-400">बुक करें &rarr;</div>
                   </div>
                 </button>
               ))}
@@ -1181,11 +1386,10 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
       )}
 
       {/* ==========================================================================
-          SCREEN 2: 6-STEP GUIDED BOOKING WIZARD
+          SCREEN 2: SUPER SIMPLE 3-STEP BOOKING WIZARD
          ========================================================================== */}
       {screen === 'WIZARD' && (
         <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 sm:p-7 space-y-6">
-          {/* Wizard Top Progress Bar */}
           <div className="space-y-3 pb-4 border-b border-slate-200 dark:border-slate-800">
             <div className="flex items-center justify-between">
               <button
@@ -1194,24 +1398,24 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                   if (wizardStep === 1) {
                     setScreen('HOME');
                   } else {
-                    setWizardStep((prev) => (prev - 1) as 1 | 2 | 3 | 4 | 5 | 6);
+                    setWizardStep((prev) => (prev - 1) as 1 | 2 | 3);
                   }
                 }}
-                className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-amber-500 min-h-[36px]"
+                className="flex items-center gap-1.5 text-sm font-bold text-slate-600 dark:text-slate-300 hover:text-amber-500 min-h-[38px]"
               >
                 <ArrowLeft className="w-4 h-4" />
-                <span>{wizardStep === 1 ? 'Back to Salon Home' : 'Previous Step'}</span>
+                <span>{wizardStep === 1 ? 'होम पेज' : 'पीछे जाएं'}</span>
               </button>
-              <span className="font-mono text-xs font-bold text-amber-600 dark:text-amber-400 tabular-nums">
-                Step {wizardStep} of 6
+              <span className="font-mono text-sm font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
+                Step {wizardStep} / 3
               </span>
             </div>
 
-            <div className="grid grid-cols-6 gap-1.5">
-              {[1, 2, 3, 4, 5, 6].map((step) => (
+            <div className="grid grid-cols-3 gap-2">
+              {[1, 2, 3].map((step) => (
                 <div
                   key={step}
-                  className={`h-1.5 rounded-full transition-colors ${
+                  className={`h-2 rounded-full transition-colors ${
                     step <= wizardStep
                       ? 'bg-amber-500'
                       : 'bg-slate-200 dark:bg-slate-800'
@@ -1224,8 +1428,8 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
           {/* STEP 1: SELECT SERVICE */}
           {wizardStep === 1 && (
             <div className="space-y-5">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                Step 1: Select Service
+              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-slate-100">
+                1. सर्विस चुनें (Select Service)
               </h2>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1236,15 +1440,15 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                       key={srv.id}
                       type="button"
                       onClick={() => toggleService(srv.id)}
-                      className={`p-4 rounded-2xl border-2 text-left transition-all flex items-center justify-between min-h-[72px] ${
+                      className={`p-4 rounded-2xl border-2 text-left transition-all flex items-center justify-between min-h-[76px] ${
                         selected
-                          ? 'bg-amber-500/10 border-amber-500 text-slate-900 dark:text-slate-100'
+                          ? 'bg-amber-500/15 border-amber-500 text-slate-900 dark:text-slate-100'
                           : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
                       }`}
                     >
                       <div className="flex items-center gap-3">
                         <div
-                          className={`w-6 h-6 rounded-lg flex items-center justify-center border ${
+                          className={`w-7 h-7 rounded-lg flex items-center justify-center border shrink-0 ${
                             selected
                               ? 'bg-amber-500 border-amber-500 text-slate-950'
                               : 'border-slate-300 dark:border-slate-700'
@@ -1253,20 +1457,15 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                           {selected && <Check className="w-4 h-4 stroke-[3]" />}
                         </div>
                         <div>
-                          <div className="font-bold text-sm">
-                            {srv.name}{' '}
-                            {srv.name_hi && (
-                              <span className="font-normal text-xs text-slate-500">
-                                ({srv.name_hi})
-                              </span>
-                            )}
+                          <div className="font-extrabold text-base">
+                            {srv.name_hi ? `${srv.name_hi} (${srv.name})` : srv.name}
                           </div>
-                          <div className="text-xs text-slate-500">
-                            {srv.duration_minutes} mins · {srv.category}
+                          <div className="text-xs font-semibold text-slate-500">
+                            {srv.duration_minutes} मिनट
                           </div>
                         </div>
                       </div>
-                      <div className="font-mono text-lg font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
+                      <div className="font-mono text-xl font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
                         ₹{srv.price}
                       </div>
                     </button>
@@ -1274,13 +1473,13 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                 })}
               </div>
 
-              <div className="pt-2 flex items-center justify-between gap-4 border-t border-slate-200 dark:border-slate-800">
+              <div className="pt-3 flex items-center justify-between gap-4 border-t border-slate-200 dark:border-slate-800">
                 <div>
-                  <div className="text-xs text-slate-500">Selected Total</div>
-                  <div className="font-mono text-xl font-extrabold text-slate-900 dark:text-slate-100 tabular-nums">
+                  <div className="text-xs font-bold text-slate-500">कुल राशि</div>
+                  <div className="font-mono text-2xl font-extrabold text-slate-900 dark:text-slate-100 tabular-nums">
                     ₹{totalPrice}{' '}
-                    <span className="text-xs font-normal text-slate-500">
-                      ({totalDuration} mins)
+                    <span className="text-xs font-bold text-slate-500">
+                      ({totalDuration} मिनट)
                     </span>
                   </div>
                 </div>
@@ -1288,78 +1487,78 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                   type="button"
                   disabled={selectedServiceIds.length === 0}
                   onClick={() => setWizardStep(2)}
-                  className="px-6 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-sm min-h-[48px] flex items-center gap-2"
+                  className="px-6 py-4 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-extrabold text-base min-h-[52px] flex items-center gap-2"
                 >
-                  <span>Next: Choose Barber</span>
-                  <ArrowRight className="w-4 h-4" />
+                  <span>आगे बढ़ें</span>
+                  <ArrowRight className="w-5 h-5" />
                 </button>
               </div>
             </div>
           )}
 
-          {/* STEP 2: SELECT BARBER */}
+          {/* STEP 2: DATE, TIME & BARBER */}
           {wizardStep === 2 && (
-            <div className="space-y-5">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                Step 2: Select Barber
+            <div className="space-y-6">
+              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-slate-100">
+                2. तारीख, समय और नाई चुनें
               </h2>
 
-              <div className="grid grid-cols-1 gap-3">
-                {/* Option 1: Owner Preferred */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBookingPreference('OWNER_PREFERRED');
-                    setSelectedSlot('');
-                  }}
-                  className={`p-5 rounded-2xl border-2 text-left transition-all flex items-center justify-between gap-4 ${
-                    bookingPreference === 'OWNER_PREFERRED'
-                      ? 'bg-amber-500/10 border-amber-500'
-                      : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center gap-2 font-bold text-base text-slate-900 dark:text-slate-100">
-                      <Sparkles className="w-5 h-5 text-amber-500" />
-                      <span>Owner Preferred</span>
-                    </div>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-                      {ownerBarber ? ownerBarber.name : 'Salon Owner'}
-                    </p>
-                  </div>
-                  {ownerBarber && (
-                    <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 shrink-0">
-                      {ownerBarber.availability_status}
-                    </span>
-                  )}
-                </button>
+              {/* Compact Barber Preference Selector */}
+              <div className="space-y-2.5">
+                <div className="text-sm font-extrabold text-slate-700 dark:text-slate-200">
+                  किससे काम कराना है?
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBookingPreference('OWNER_PREFERRED');
+                      setSelectedSlot('');
+                    }}
+                    className={`p-3 rounded-2xl border-2 text-xs sm:text-sm font-extrabold min-h-[52px] ${
+                      bookingPreference === 'OWNER_PREFERRED'
+                        ? 'bg-amber-500 text-slate-950 border-amber-500'
+                        : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    मालिक ({ownerBarber?.name?.split(' ')[0] || 'Owner'})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBookingPreference('ANY_AVAILABLE');
+                      setSelectedSlot('');
+                    }}
+                    className={`p-3 rounded-2xl border-2 text-xs sm:text-sm font-extrabold min-h-[52px] ${
+                      bookingPreference === 'ANY_AVAILABLE'
+                        ? 'bg-amber-500 text-slate-950 border-amber-500'
+                        : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    कोई भी नाई
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBookingPreference('SPECIFIC_STAFF');
+                      if (!preferredBarberId && activeStaffList.length > 0) {
+                        const staffOnly = activeStaffList.find((s) => !s.is_owner) || activeStaffList[0];
+                        setPreferredBarberId(staffOnly.id);
+                      }
+                      setSelectedSlot('');
+                    }}
+                    className={`p-3 rounded-2xl border-2 text-xs sm:text-sm font-extrabold min-h-[52px] ${
+                      bookingPreference === 'SPECIFIC_STAFF'
+                        ? 'bg-amber-500 text-slate-950 border-amber-500'
+                        : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    स्टाफ चुनें
+                  </button>
+                </div>
 
-                {/* Option 2: Specific Staff */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBookingPreference('SPECIFIC_STAFF');
-                    if (!preferredBarberId && activeStaffList.length > 0) {
-                      const staffOnly = activeStaffList.find((s) => !s.is_owner) || activeStaffList[0];
-                      setPreferredBarberId(staffOnly.id);
-                    }
-                    setSelectedSlot('');
-                  }}
-                  className={`p-5 rounded-2xl border-2 text-left transition-all flex items-center justify-between gap-4 ${
-                    bookingPreference === 'SPECIFIC_STAFF'
-                      ? 'bg-amber-500/10 border-amber-500'
-                      : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-bold text-base text-slate-900 dark:text-slate-100">
-                    <UserCheck className="w-5 h-5 text-amber-500" />
-                    <span>Specific Staff</span>
-                  </div>
-                </button>
-
-                {/* Specific Staff List */}
                 {bookingPreference === 'SPECIFIC_STAFF' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pl-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                     {activeStaffList.map((member) => (
                       <button
                         key={member.id}
@@ -1368,225 +1567,132 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                           setPreferredBarberId(member.id);
                           setSelectedSlot('');
                         }}
-                        className={`p-3.5 rounded-xl border text-left transition-all min-h-[64px] ${
+                        className={`p-3 rounded-xl border-2 text-left text-xs sm:text-sm font-bold ${
                           preferredBarberId === member.id
                             ? 'bg-slate-900 text-white dark:bg-amber-500 dark:text-slate-950 border-amber-500'
                             : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
                         }`}
                       >
-                        <div className="font-bold text-sm">{member.name}</div>
-                        <div className="text-xs opacity-80 mt-0.5">
-                          {member.specialty} · {member.availability_status}
-                        </div>
+                        <div>{member.name}</div>
+                        <div className="text-[11px] opacity-80">{member.availability_status}</div>
                       </button>
                     ))}
                   </div>
                 )}
-
-                {/* Option 3: Any Available */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBookingPreference('ANY_AVAILABLE');
-                    setSelectedSlot('');
-                  }}
-                  className={`p-5 rounded-2xl border-2 text-left transition-all flex items-center justify-between gap-4 ${
-                    bookingPreference === 'ANY_AVAILABLE'
-                      ? 'bg-amber-500/10 border-amber-500'
-                      : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-bold text-base text-slate-900 dark:text-slate-100">
-                    <Users className="w-5 h-5 text-amber-500" />
-                    <span>Any Available</span>
-                  </div>
-                </button>
               </div>
 
-              <div className="pt-2 flex justify-end border-t border-slate-200 dark:border-slate-800">
-                <button
-                  type="button"
-                  disabled={bookingPreference === 'SPECIFIC_STAFF' && !preferredBarberId}
-                  onClick={() => setWizardStep(3)}
-                  className="px-6 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-sm min-h-[48px] flex items-center gap-2"
-                >
-                  <span>Next: Select Date</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 3: SELECT DATE */}
-          {wizardStep === 3 && (
-            <div className="space-y-5">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                Step 3: Select Date
-              </h2>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {upcomingDates.map((d) => {
-                  const isSel = bookingDate === d.dateStr;
-                  return (
-                    <button
-                      key={d.dateStr}
-                      type="button"
-                      disabled={d.isHoliday}
-                      onClick={() => {
-                        setBookingDate(d.dateStr);
-                        setSelectedSlot('');
-                      }}
-                      className={`p-4 rounded-2xl border-2 text-left transition-all min-h-[76px] ${
-                        d.isHoliday
-                          ? 'bg-slate-100 dark:bg-slate-950 border-slate-200 dark:border-slate-800 opacity-50 cursor-not-allowed'
-                          : isSel
-                          ? 'bg-amber-500/15 border-amber-500 text-slate-900 dark:text-slate-100'
-                          : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
-                      }`}
-                    >
-                      <div className="text-xs font-semibold text-amber-600 dark:text-amber-400">
-                        {d.isHoliday ? 'Closed (Holiday)' : d.dayShort}
-                      </div>
-                      <div className="font-mono text-base font-extrabold mt-0.5 tabular-nums">
-                        {d.dayNum}
-                      </div>
-                      <div className="text-[11px] text-slate-500">{d.dayFull}</div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex items-center gap-3 pt-2">
-                <label className="text-xs font-medium text-slate-500">Or choose another date:</label>
-                <input
-                  type="date"
-                  min={todayStr}
-                  value={bookingDate}
-                  onChange={(e) => {
-                    setBookingDate(e.target.value);
-                    setSelectedSlot('');
-                  }}
-                  className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm font-mono"
-                />
+              {/* Date Selector */}
+              <div className="space-y-2.5">
+                <div className="text-sm font-extrabold text-slate-700 dark:text-slate-200">
+                  तारीख चुनें
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  {upcomingDates.slice(0, 4).map((d) => {
+                    const isSel = bookingDate === d.dateStr;
+                    return (
+                      <button
+                        key={d.dateStr}
+                        type="button"
+                        disabled={d.isHoliday}
+                        onClick={() => {
+                          setBookingDate(d.dateStr);
+                          setSelectedSlot('');
+                        }}
+                        className={`p-3.5 rounded-2xl border-2 text-left min-h-[68px] ${
+                          d.isHoliday
+                            ? 'bg-slate-100 dark:bg-slate-950 border-slate-200 dark:border-slate-800 opacity-50 cursor-not-allowed'
+                            : isSel
+                            ? 'bg-amber-500/15 border-amber-500 text-slate-900 dark:text-slate-100'
+                            : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+                        }`}
+                      >
+                        <div className="text-xs font-extrabold text-amber-600 dark:text-amber-400">
+                          {d.isHoliday ? 'छुट्टी (बंद)' : d.dayShort === 'Today' ? 'आज (Today)' : d.dayShort === 'Tmrw' ? 'कल (Tmrw)' : d.dayShort}
+                        </div>
+                        <div className="font-mono text-base font-extrabold mt-0.5 tabular-nums">
+                          {d.dayNum}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-3 pt-1">
+                  <label className="text-xs font-bold text-slate-500">अन्य तारीख:</label>
+                  <input
+                    type="date"
+                    min={todayStr}
+                    value={bookingDate}
+                    onChange={(e) => {
+                      setBookingDate(e.target.value);
+                      setSelectedSlot('');
+                    }}
+                    className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm font-mono font-bold"
+                  />
+                </div>
               </div>
 
               {isHolidayDate && (
-                <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-600 dark:text-rose-400 flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>Salon is closed on {selectedDayName}s. Please pick another date.</span>
+                <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm font-bold text-rose-600 dark:text-rose-400 flex items-center gap-2">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <span>{selectedDayName} को सैलून बंद रहता है। दूसरी तारीख चुनें।</span>
                 </div>
               )}
 
-              <div className="pt-2 flex justify-end border-t border-slate-200 dark:border-slate-800">
+              {/* Time Slots */}
+              <div className="space-y-2.5">
+                <div className="text-sm font-extrabold text-slate-700 dark:text-slate-200">
+                  खाली समय चुनें ({bookingDate})
+                </div>
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
+                  {slotAvailabilityList.map((slot) => {
+                    const isSel = selectedSlot === slot.slot_time;
+                    return (
+                      <button
+                        key={slot.slot_time}
+                        type="button"
+                        disabled={!slot.bookable}
+                        onClick={() => setSelectedSlot(slot.slot_time)}
+                        className={`py-3.5 px-2 rounded-xl font-mono text-base font-extrabold border-2 transition-all min-h-[52px] tabular-nums ${
+                          !slot.bookable
+                            ? 'bg-slate-100 dark:bg-slate-950/50 border-slate-200 dark:border-slate-800/50 text-slate-400 dark:text-slate-600 line-through cursor-not-allowed'
+                            : isSel
+                            ? 'bg-amber-500 border-amber-500 text-slate-950 shadow-sm'
+                            : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 hover:border-amber-500'
+                        }`}
+                      >
+                        {slot.slot_time}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="pt-3 flex justify-end border-t border-slate-200 dark:border-slate-800">
                 <button
                   type="button"
-                  disabled={!bookingDate || isHolidayDate}
-                  onClick={() => setWizardStep(4)}
-                  className="px-6 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-sm min-h-[48px] flex items-center gap-2"
+                  disabled={
+                    !bookingDate ||
+                    isHolidayDate ||
+                    !selectedSlot ||
+                    (bookingPreference === 'SPECIFIC_STAFF' && !preferredBarberId)
+                  }
+                  onClick={() => setWizardStep(3)}
+                  className="w-full sm:w-auto px-6 py-4 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-extrabold text-base min-h-[52px] flex items-center justify-center gap-2"
                 >
-                  <span>Next: Available Time</span>
-                  <ArrowRight className="w-4 h-4" />
+                  <span>आगे बढ़ें: नाम और नंबर</span>
+                  <ArrowRight className="w-5 h-5" />
                 </button>
               </div>
             </div>
           )}
 
-          {/* STEP 4: SELECT AVAILABLE TIME */}
-          {wizardStep === 4 && (
+          {/* STEP 3: NAME, MOBILE & CONFIRM */}
+          {wizardStep === 3 && (
             <div className="space-y-5">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                  Step 4: Select Available Time
-                </h2>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                  Showing open slots on <strong className="font-mono">{bookingDate}</strong> for{' '}
-                  <strong>{selectedBarberDisplay}</strong>.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
-                {slotAvailabilityList.map((slot) => {
-                  const isSel = selectedSlot === slot.slot_time;
-                  return (
-                    <button
-                      key={slot.slot_time}
-                      type="button"
-                      disabled={!slot.bookable}
-                      onClick={() => setSelectedSlot(slot.slot_time)}
-                      className={`py-3 px-2 rounded-xl font-mono text-sm font-bold border-2 transition-all min-h-[50px] tabular-nums ${
-                        !slot.bookable
-                          ? 'bg-slate-100 dark:bg-slate-950/50 border-slate-200 dark:border-slate-800/50 text-slate-400 dark:text-slate-600 line-through cursor-not-allowed'
-                          : isSel
-                          ? 'bg-amber-500 border-amber-500 text-slate-950 shadow-sm'
-                          : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 hover:border-amber-500'
-                      }`}
-                    >
-                      {slot.slot_time}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {slotAvailabilityList.every((s) => !s.bookable) && (
-                <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-700 dark:text-amber-300">
-                  No bookable slots remain for this barber on {bookingDate}. Go back to Step 2 or Step 3 to pick another date or barber.
-                </div>
-              )}
-
-              <div className="pt-2 flex justify-end border-t border-slate-200 dark:border-slate-800">
-                <button
-                  type="button"
-                  disabled={!selectedSlot}
-                  onClick={() => setWizardStep(5)}
-                  className="px-6 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-sm min-h-[48px] flex items-center gap-2"
-                >
-                  <span>Next: Your Details</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 5: CUSTOMER NAME & MOBILE */}
-          {wizardStep === 5 && (
-            <div className="space-y-5">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                Step 5: Your Details
+              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-slate-100">
+                3. नाम और मोबाइल नंबर डालें
               </h2>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setAuthOption('GUEST')}
-                  className={`p-4 rounded-2xl border-2 text-left transition-all ${
-                    authOption === 'GUEST'
-                      ? 'bg-amber-500/10 border-amber-500'
-                      : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-bold text-sm text-slate-900 dark:text-slate-100">
-                    <User className="w-4 h-4 text-amber-500" />
-                    <span>Quick Guest Booking</span>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setAuthOption('OTP')}
-                  className={`p-4 rounded-2xl border-2 text-left transition-all ${
-                    authOption === 'OTP'
-                      ? 'bg-amber-500/10 border-amber-500'
-                      : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-bold text-sm text-slate-900 dark:text-slate-100">
-                    <KeyRound className="w-4 h-4 text-amber-500" />
-                    <span>Verify with OTP</span>
-                  </div>
-                </button>
-              </div>
-
-              {/* Honeypot anti-spam field (hidden from real humans) */}
               <input
                 type="text"
                 tabIndex={-1}
@@ -1599,168 +1705,52 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
-                    Mobile Number (10 Digits) *
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="tel"
-                      required
-                      placeholder="9876543210"
-                      value={customerPhone}
-                      onChange={(e) => handlePhoneInput(e.target.value)}
-                      className="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-3 text-base font-mono tabular-nums"
-                    />
-                    {authOption === 'OTP' && !otpVerifiedToken && (
-                      <button
-                        type="button"
-                        disabled={otpLoading || customerPhone.length !== 10}
-                        onClick={handleSendOtp}
-                        className="px-4 py-2 rounded-xl bg-slate-900 dark:bg-amber-500 text-white dark:text-slate-950 font-bold text-xs whitespace-nowrap disabled:opacity-40"
-                      >
-                        {otpLoading ? 'Sending...' : otpSent ? 'Resend OTP' : 'Send OTP'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
-                    Your Full Name *
+                  <label className="block text-sm font-extrabold text-slate-700 dark:text-slate-200 mb-1.5">
+                    आपका नाम *
                   </label>
                   <input
                     type="text"
                     required
-                    placeholder="Enter your name"
+                    placeholder="अपना नाम लिखें"
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-3 text-base"
+                    className="w-full rounded-2xl border-2 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-4 py-3.5 text-base font-bold"
                   />
                 </div>
-              </div>
 
-              {/* OTP Verification Box */}
-              {authOption === 'OTP' && (
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
-                  {otpVerifiedToken ? (
-                    <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 text-sm font-bold">
-                      <ShieldCheck className="w-5 h-5" />
-                      <span>Mobile Number Verified via OTP!</span>
-                    </div>
-                  ) : otpSent ? (
-                    <div className="space-y-2.5">
-                      {otpPreviewCode && (
-                        <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded-lg">
-                          Verification OTP Code: <strong className="font-mono text-sm">{otpPreviewCode}</strong>
-                        </div>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          placeholder="Enter 6-digit OTP"
-                          value={otpInput}
-                          onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                          className="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-2.5 text-base font-mono tracking-widest"
-                        />
-                        <button
-                          type="button"
-                          disabled={otpLoading || otpInput.length < 6}
-                          onClick={handleVerifyOtp}
-                          className="px-5 py-2.5 rounded-xl bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-500 disabled:opacity-40 min-h-[44px]"
-                        >
-                          {otpLoading ? 'Verifying...' : 'Verify OTP'}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-xs text-slate-500">
-                      Enter your 10-digit mobile number above and tap <strong>Send OTP</strong> to verify.
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">
-                    Haircut Style Preference (Optional)
+                  <label className="block text-sm font-extrabold text-slate-700 dark:text-slate-200 mb-1.5">
+                    मोबाइल नंबर (10 अंक) *
                   </label>
                   <input
-                    type="text"
-                    placeholder="e.g., Medium Fade, Scissor Trim"
-                    value={haircutPreference}
-                    onChange={(e) => setHaircutPreference(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">
-                    Special Request (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Any note for your barber"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm"
+                    type="tel"
+                    required
+                    placeholder="9876543210"
+                    value={customerPhone}
+                    onChange={(e) => handlePhoneInput(e.target.value)}
+                    className="w-full rounded-2xl border-2 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-4 py-3.5 text-lg font-mono font-extrabold tabular-nums"
                   />
                 </div>
               </div>
-
-              <div className="pt-2 flex justify-end border-t border-slate-200 dark:border-slate-800">
-                <button
-                  type="button"
-                  disabled={
-                    customerName.trim().length < 2 ||
-                    customerPhone.length !== 10 ||
-                    (authOption === 'OTP' && !otpVerifiedToken)
-                  }
-                  onClick={() => setWizardStep(6)}
-                  className="px-6 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-sm min-h-[48px] flex items-center gap-2"
-                >
-                  <span>Next: Review &amp; Confirm</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 6: CONFIRM BOOKING */}
-          {wizardStep === 6 && (
-            <div className="space-y-5">
-              <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                Step 6: Confirm Booking
-              </h2>
 
               <div className="rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 divide-y divide-slate-200 dark:divide-slate-800 text-sm">
-                <div className="p-4 flex items-center justify-between">
-                  <span className="text-slate-500">Services</span>
-                  <span className="font-bold text-right">
-                    {selectedServices.map((s) => s.name).join(', ')}
+                <div className="p-3.5 flex items-center justify-between">
+                  <span className="text-slate-500 font-bold">सर्विस</span>
+                  <span className="font-extrabold text-right">
+                    {selectedServices.map((s) => s.name_hi || s.name).join(', ')}
                   </span>
                 </div>
-                <div className="p-4 flex items-center justify-between">
-                  <span className="text-slate-500">Barber Preference</span>
-                  <span className="font-bold text-right">{selectedBarberDisplay}</span>
-                </div>
-                <div className="p-4 flex items-center justify-between">
-                  <span className="text-slate-500">Date &amp; Time</span>
-                  <span className="font-mono font-bold tabular-nums">
-                    {bookingDate} · {selectedSlot}
+                <div className="p-3.5 flex items-center justify-between">
+                  <span className="text-slate-500 font-bold">नाई / समय</span>
+                  <span className="font-mono font-extrabold text-right tabular-nums">
+                    {selectedBarberDisplay.split(' ')[0]} · {bookingDate} · {selectedSlot}
                   </span>
                 </div>
-                <div className="p-4 flex items-center justify-between">
-                  <span className="text-slate-500">Customer</span>
-                  <span className="font-bold text-right">
-                    {customerName} (+91 {customerPhone})
-                    {authOption === 'OTP' && ' · OTP Verified'}
+                <div className="p-3.5 flex items-center justify-between bg-amber-500/10">
+                  <span className="font-extrabold text-slate-900 dark:text-slate-100">
+                    कुल बिल
                   </span>
-                </div>
-                <div className="p-4 flex items-center justify-between bg-amber-500/10">
-                  <span className="font-bold text-slate-900 dark:text-slate-100">
-                    Estimated Total
-                  </span>
-                  <span className="font-mono text-xl font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
+                  <span className="font-mono text-2xl font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
                     ₹{totalPrice}
                   </span>
                 </div>
@@ -1768,11 +1758,16 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
 
               <button
                 type="button"
-                disabled={submitting || !isOnline}
+                disabled={
+                  submitting ||
+                  !isOnline ||
+                  customerName.trim().length < 2 ||
+                  customerPhone.length !== 10
+                }
                 onClick={handleConfirmBooking}
-                className="w-full py-4 px-6 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-extrabold text-base min-h-[54px] shadow-sm transition-colors"
+                className="w-full py-4 px-6 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-extrabold text-lg min-h-[58px] shadow-sm transition-colors"
               >
-                {submitting ? 'Confirming Booking...' : `Confirm Booking · ₹${totalPrice}`}
+                {submitting ? 'बुकिंग हो रही है...' : `बुकिंग पक्की करें · ₹${totalPrice}`}
               </button>
             </div>
           )}
@@ -1783,42 +1778,26 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
           SCREEN 3: BOOKING CONFIRMATION SCREEN (LIVE-SYNCED)
          ========================================================================== */}
       {screen === 'CONFIRMED' && liveConfirmed && (
-        <div className="rounded-3xl bg-white dark:bg-slate-900 border border-emerald-500/40 p-6 sm:p-8 space-y-6">
+        <div className="rounded-3xl bg-white dark:bg-slate-900 border-2 border-emerald-500/40 p-5 sm:p-7 space-y-5">
           <div className="text-center space-y-2">
             <div className="w-14 h-14 rounded-2xl bg-emerald-500/15 text-emerald-500 flex items-center justify-center mx-auto">
               <CheckCircle2 className="w-8 h-8" />
             </div>
             <h2 className="text-2xl font-extrabold text-slate-900 dark:text-slate-100">
-              Appointment Confirmed!
+              बुकिंग पक्की हो गई!
             </h2>
           </div>
 
-          {notifPermission === 'default' && (
-            <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                Live Turn Alerts
-              </div>
-              <button
-                type="button"
-                onClick={handleEnableBrowserAlerts}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs"
-              >
-                <BellRing className="w-3.5 h-3.5" />
-                <span>Enable Alerts</span>
-              </button>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-3">
             <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-center">
-              <div className="text-xs text-slate-500">Booking Reference Number</div>
-              <div className="font-mono text-2xl font-extrabold text-amber-600 dark:text-amber-400 mt-1 tabular-nums">
+              <div className="text-xs font-bold text-slate-500">बुकिंग नंबर</div>
+              <div className="font-mono text-xl sm:text-2xl font-extrabold text-amber-600 dark:text-amber-400 mt-1 tabular-nums">
                 {liveConfirmed.reference_code}
               </div>
             </div>
             <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-center">
-              <div className="text-xs text-slate-500">Live Queue Token</div>
-              <div className="font-mono text-2xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">
+              <div className="text-xs font-bold text-slate-500">टोकन नंबर</div>
+              <div className="font-mono text-xl sm:text-2xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">
                 Token #{liveConfirmed.token_number}
               </div>
             </div>
@@ -1826,26 +1805,26 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
 
           <div className="rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 divide-y divide-slate-200 dark:divide-slate-800 text-sm">
             <div className="p-3.5 flex justify-between">
-              <span className="text-slate-500">Customer Name</span>
-              <span className="font-bold">{liveConfirmed.customer_name}</span>
+              <span className="text-slate-500 font-bold">नाम</span>
+              <span className="font-extrabold">{liveConfirmed.customer_name}</span>
             </div>
             <div className="p-3.5 flex justify-between">
-              <span className="text-slate-500">Services</span>
-              <span className="font-bold text-right">{liveConfirmed.services_names}</span>
+              <span className="text-slate-500 font-bold">सर्विस</span>
+              <span className="font-extrabold text-right">{liveConfirmed.services_names}</span>
             </div>
             <div className="p-3.5 flex justify-between">
-              <span className="text-slate-500">Assigned Barber</span>
-              <span className="font-bold">{liveConfirmed.barber_name}</span>
+              <span className="text-slate-500 font-bold">नाई (Barber)</span>
+              <span className="font-extrabold">{liveConfirmed.barber_name}</span>
             </div>
             <div className="p-3.5 flex justify-between">
-              <span className="text-slate-500">Live Date &amp; Time</span>
-              <span className="font-mono font-bold tabular-nums text-amber-600 dark:text-amber-400">
+              <span className="text-slate-500 font-bold">तारीख और समय</span>
+              <span className="font-mono font-extrabold tabular-nums text-amber-600 dark:text-amber-400">
                 {liveConfirmed.booking_date} · {liveConfirmed.slot_time}
               </span>
             </div>
             <div className="p-3.5 flex justify-between">
-              <span className="text-slate-500">Estimated Bill</span>
-              <span className="font-mono font-extrabold text-slate-900 dark:text-slate-100 tabular-nums">
+              <span className="text-slate-500 font-bold">कुल बिल</span>
+              <span className="font-mono text-lg font-extrabold text-slate-900 dark:text-slate-100 tabular-nums">
                 ₹{liveConfirmed.total_amount}
               </span>
             </div>
@@ -1861,24 +1840,26 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
             />
           )}
 
+          {myActiveAppointment && renderDeliveryTracker(myActiveAppointment)}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <button
               type="button"
               onClick={() => setScreen('QUEUE')}
-              className="w-full py-3.5 px-5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm min-h-[48px] flex items-center justify-center gap-2"
+              className="w-full py-4 px-5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-base min-h-[52px] flex items-center justify-center gap-2"
             >
-              <Clock className="w-4 h-4" />
-              <span>Track Live Queue</span>
+              <Clock className="w-5 h-5" />
+              <span>लाइव लाइन देखें</span>
             </button>
 
             <a
               href={bookingWhatsAppUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full py-3.5 px-5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm min-h-[48px] flex items-center justify-center gap-2"
+              className="w-full py-4 px-5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-base min-h-[52px] flex items-center justify-center gap-2"
             >
-              <MessageCircle className="w-4 h-4" />
-              <span>Contact Salon on WhatsApp</span>
+              <MessageCircle className="w-5 h-5" />
+              <span>Owner को WhatsApp भेजें</span>
             </a>
           </div>
 
@@ -1886,9 +1867,9 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
             <button
               type="button"
               onClick={() => setScreen('HOME')}
-              className="text-xs font-semibold text-slate-500 hover:text-amber-500"
+              className="text-sm font-extrabold text-slate-500 hover:text-amber-500"
             >
-              &larr; Back to Salon Home
+              &larr; होम पेज पर जाएं
             </button>
           </div>
         </div>
@@ -2011,14 +1992,16 @@ export const CustomerBookingPortal: React.FC<CustomerBookingPortalProps> = ({
                 onChange={(e) => {
                   const digits = e.target.value.replace(/\D/g, '').slice(0, 10);
                   setLookupPhone(digits);
-                  if (digits.length === 10 && typeof localStorage !== 'undefined') {
-                    localStorage.setItem('sb_customer_phone', digits);
+                  if (digits.length === 10) {
+                    handleSetTrackedPhone(digits);
                   }
                 }}
                 className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 pl-10 pr-4 py-3 text-base font-mono tabular-nums"
               />
             </div>
           </div>
+
+          {myActiveAppointment && renderDeliveryTracker(myActiveAppointment)}
 
           {customerNotifications.length > 0 && (
             <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4 space-y-2.5">

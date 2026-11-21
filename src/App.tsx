@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BadgeIndianRupee,
   BarChart3,
+  Bell,
   CalendarCheck,
   CheckCircle2,
   Clock,
@@ -33,6 +34,7 @@ import type {
   UserRole,
 } from './types/salon';
 import { Language, t } from './lib/i18n';
+import { playAlertChime, sendNativeNotification } from './lib/alerts';
 import { supabase } from './lib/supabase';
 import {
   cacheSalonStateLocally,
@@ -93,6 +95,9 @@ export default function App() {
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+  const [showOwnerAlerts, setShowOwnerAlerts] = useState<boolean>(false);
+  const seenOwnerNotifIdsRef = useRef<Set<string>>(new Set());
+  const ownerNotifInitRef = useRef<boolean>(false);
 
   const notify = useCallback((type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -236,6 +241,44 @@ export default function App() {
       }
     };
   }, [fetchBootstrapData]);
+
+  const ownerNotifications = (data?.notifications || []).filter(
+    (n) => n.recipient_role === 'OWNER'
+  );
+  const unreadOwnerNotifications = ownerNotifications.filter((n) => !n.is_read);
+
+  // Instant Owner Sound + Toast + Native Alert when a new customer booking arrives
+  useEffect(() => {
+    if (!data) return;
+    if (!ownerNotifInitRef.current) {
+      ownerNotifications.forEach((n) => seenOwnerNotifIdsRef.current.add(n.id));
+      ownerNotifInitRef.current = true;
+      return;
+    }
+    for (const n of ownerNotifications) {
+      if (!seenOwnerNotifIdsRef.current.has(n.id)) {
+        seenOwnerNotifIdsRef.current.add(n.id);
+        if (!n.is_read && role === 'OWNER' && ownerUnlocked) {
+          playAlertChime('owner');
+          notify('success', `${n.title}: ${n.message}`);
+          sendNativeNotification(`${data.salon.name} — ${n.title}`, n.message);
+        }
+      }
+    }
+  }, [data, ownerNotifications, role, ownerUnlocked, notify]);
+
+  const handleMarkOwnerNotificationsRead = async () => {
+    try {
+      await fetch('/api/notifications/mark-read', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'OWNER' }),
+      });
+      await fetchBootstrapData();
+    } catch {
+      // Ignore transient error
+    }
+  };
 
   const handleSaveOfflineDraft = async (draft: OfflineDraftBill) => {
     await saveOfflineDraftBill(draft);
@@ -436,6 +479,22 @@ export default function App() {
               <Moon className="w-4 h-4 text-slate-700" />
             )}
           </button>
+
+          {role === 'OWNER' && ownerUnlocked && (
+            <button
+              type="button"
+              onClick={() => setShowOwnerAlerts(true)}
+              className="relative p-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 min-h-[36px] min-w-[36px] flex items-center justify-center"
+              title="Booking Alerts"
+            >
+              <Bell className="w-4 h-4 text-amber-500" />
+              {unreadOwnerNotifications.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-extrabold flex items-center justify-center tabular-nums">
+                  {unreadOwnerNotifications.length}
+                </span>
+              )}
+            </button>
+          )}
 
           {role !== 'CUSTOMER' && !needsPinUnlock && (
             <button
@@ -894,6 +953,113 @@ export default function App() {
                 : `Unlock ${showLoginModal === 'OWNER' ? 'Owner' : 'Staff'} Portal`}
             </button>
           </form>
+        </div>
+      )}
+      {/* Owner Live Booking Alerts Drawer */}
+      {showOwnerAlerts && data && role === 'OWNER' && ownerUnlocked && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setShowOwnerAlerts(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 space-y-4 shadow-2xl max-h-[82vh] flex flex-col"
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-amber-500" />
+                <h3 className="text-base font-bold">Booking Notifications</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                {unreadOwnerNotifications.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleMarkOwnerNotificationsRead}
+                    className="text-xs font-bold text-amber-600 dark:text-amber-400 hover:underline"
+                  >
+                    Mark Read
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowOwnerAlerts(false)}
+                  className="p-1 text-slate-400"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5">
+              {ownerNotifications.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-500">
+                  No booking alerts yet.
+                </div>
+              ) : (
+                ownerNotifications.slice(0, 20).map((n) => {
+                  const tokenMatch = n.title.match(/#(\d+)/);
+                  const tokenNo = tokenMatch ? Number(tokenMatch[1]) : null;
+                  const matchingBooking = tokenNo
+                    ? data.bookings.find((b) => b.token_number === tokenNo)
+                    : undefined;
+                  const waHref = matchingBooking
+                    ? `https://wa.me/91${matchingBooking.customer_phone.replace(/\D/g, '').slice(-10)}?text=${encodeURIComponent(
+                        `Hello ${matchingBooking.customer_name}, your booking at ${data.salon.name} is confirmed! Token #${matchingBooking.token_number}, Date: ${matchingBooking.booking_date}, Time: ${matchingBooking.slot_time}.`
+                      )}`
+                    : null;
+
+                  return (
+                    <div
+                      key={n.id}
+                      className={`p-3.5 rounded-2xl border space-y-2 ${
+                        !n.is_read
+                          ? 'bg-amber-500/10 border-amber-500/40'
+                          : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">
+                          {n.title}
+                        </span>
+                        <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                          {new Date(n.created_at).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-600 dark:text-slate-300">
+                        {n.message}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {waHref && (
+                          <a
+                            href={waHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-[11px] font-bold"
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                            <span>WhatsApp Confirm</span>
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowOwnerAlerts(false);
+                            setOwnerTab('BOOKINGS');
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-[11px] font-bold"
+                        >
+                          Open Bookings
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

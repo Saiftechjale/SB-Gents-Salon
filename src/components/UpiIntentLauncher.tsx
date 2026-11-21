@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Check, Copy, ExternalLink, Smartphone } from 'lucide-react';
+import { Check, Copy, Smartphone } from 'lucide-react';
 import { buildUpiDeepLinks, isValidUpiId } from '../lib/upiIntent';
 
 interface UpiIntentLauncherProps {
@@ -29,10 +29,10 @@ export const UpiIntentLauncher: React.FC<UpiIntentLauncherProps> = ({
 
   if (!hasValidUpi) {
     return (
-      <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 space-y-2.5 text-xs">
-        <div className="font-bold text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
+      <div className="p-4 rounded-2xl bg-blue-500/10 border border-blue-500/30 space-y-2.5 text-sm">
+        <div className="font-extrabold text-blue-700 dark:text-blue-300 flex items-center gap-2">
           <Smartphone className="w-4 h-4" />
-          <span>UPI Deep Link / Direct App Payment</span>
+          <span>UPI ID सेट करें</span>
         </div>
         {allowQuickConfig && onQuickSaveUpiId ? (
           <div className="flex gap-2">
@@ -41,7 +41,7 @@ export const UpiIntentLauncher: React.FC<UpiIntentLauncherProps> = ({
               placeholder="yourname@okaxis"
               value={draftUpiId}
               onChange={(e) => setDraftUpiId(e.target.value)}
-              className="flex-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 font-mono text-xs"
+              className="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 font-mono text-sm"
             />
             <button
               type="button"
@@ -51,13 +51,13 @@ export const UpiIntentLauncher: React.FC<UpiIntentLauncherProps> = ({
                 await onQuickSaveUpiId(draftUpiId.trim());
                 setSavingUpi(false);
               }}
-              className="px-3 py-1.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-40"
+              className="px-4 py-2 rounded-xl bg-blue-600 text-white font-bold text-sm disabled:opacity-40"
             >
-              {savingUpi ? 'Saving...' : 'Save UPI ID'}
+              {savingUpi ? 'Saving...' : 'Save'}
             </button>
           </div>
         ) : (
-          <p className="text-slate-600 dark:text-slate-400">UPI ID not set.</p>
+          <p className="text-slate-600 dark:text-slate-400 text-xs font-semibold">UPI ID उपलब्ध नहीं है</p>
         )}
       </div>
     );
@@ -82,52 +82,43 @@ export const UpiIntentLauncher: React.FC<UpiIntentLauncherProps> = ({
   };
 
   return (
-    <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 space-y-3 text-xs">
+    <div className="p-4 rounded-2xl bg-blue-500/10 border border-blue-500/30 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="font-bold text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
+          <div className="text-sm sm:text-base font-extrabold text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
             <Smartphone className="w-4 h-4" />
-            <span>Direct UPI App Payment (UPI Intent)</span>
+            <span>UPI पेमेंट · ₹{amount}</span>
           </div>
-          <div className="text-slate-600 dark:text-slate-300 mt-0.5 font-mono">
-            Payee UPI: <strong>{upiId}</strong> · Amount:{' '}
-            <strong className="tabular-nums">₹{amount.toFixed(2)}</strong>
+          <div className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 mt-0.5 font-mono font-bold">
+            {upiId}
           </div>
         </div>
         <button
           type="button"
           onClick={handleCopyUpiId}
-          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-semibold hover:border-blue-500"
+          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm font-extrabold hover:border-blue-500 min-h-[40px]"
         >
-          {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-          <span>{copied ? 'Copied UPI ID' : 'Copy UPI ID'}</span>
+          {copied ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+          <span>{copied ? 'कॉपी हो गया' : 'UPI कॉपी करें'}</span>
         </button>
       </div>
 
-      {/* Primary UPI Intent Button + Specific App Deep Links */}
-      <div className="flex flex-wrap items-center gap-2">
-        <a
-          href={links.generic}
-          className="flex-1 min-w-[160px] flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs min-h-[42px] transition-colors"
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-          <span>Open Any UPI App (₹{amount})</span>
-        </a>
-        <a
-          href={links.gpay}
-          className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-bold hover:border-blue-500 min-h-[42px] flex items-center"
-        >
-          GPay
-        </a>
+      <div className="grid grid-cols-3 gap-2.5">
         <a
           href={links.phonepe}
-          className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-bold hover:border-blue-500 min-h-[42px] flex items-center"
+          className="py-3 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-extrabold text-sm min-h-[48px] flex items-center justify-center transition-colors"
         >
           PhonePe
         </a>
         <a
+          href={links.gpay}
+          className="py-3 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-sm min-h-[48px] flex items-center justify-center transition-colors"
+        >
+          GPay
+        </a>
+        <a
           href={links.paytm}
-          className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-bold hover:border-blue-500 min-h-[42px] flex items-center"
+          className="py-3 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-extrabold text-sm min-h-[48px] flex items-center justify-center transition-colors"
         >
           Paytm
         </a>

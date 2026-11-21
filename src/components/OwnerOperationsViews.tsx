@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Bell,
   CalendarPlus,
   Clock,
   Edit3,
@@ -593,6 +594,27 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
     [activeServices, bServiceIds]
   );
 
+  const unreadOwnerAlerts = useMemo(
+    () =>
+      data.notifications.filter(
+        (n) => n.recipient_role === 'OWNER' && !n.is_read
+      ),
+    [data.notifications]
+  );
+
+  const handleMarkOwnerAlertsRead = async () => {
+    try {
+      await fetch('/api/notifications/mark-read', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'OWNER' }),
+      });
+      await onRefresh();
+    } catch {
+      // Ignore transient error
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* ==========================================================================
@@ -600,18 +622,83 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
          ========================================================================== */}
       {activeSubTab === 'DASHBOARD' && (
         <div className="space-y-6">
-          {/* Top Bar: Owner Availability + Instant Actions */}
+          {/* Live Incoming Online Booking Alerts */}
+          {unreadOwnerAlerts.length > 0 && (
+            <div className="rounded-2xl bg-amber-500/10 border border-amber-500/40 p-4 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-amber-700 dark:text-amber-300">
+                  <Bell className="w-4 h-4 text-amber-500" />
+                  <span>New Bookings ({unreadOwnerAlerts.length})</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleMarkOwnerAlertsRead}
+                  className="text-xs font-bold text-amber-700 dark:text-amber-300 underline"
+                >
+                  Mark All Read
+                </button>
+              </div>
+              <div className="space-y-2 max-h-44 overflow-y-auto">
+                {unreadOwnerAlerts.slice(0, 5).map((n) => {
+                  const tokenMatch = n.title.match(/#(\d+)/);
+                  const tokenNo = tokenMatch ? Number(tokenMatch[1]) : null;
+                  const matchingBooking = tokenNo
+                    ? data.bookings.find((b) => b.token_number === tokenNo)
+                    : undefined;
+                  const waHref = matchingBooking
+                    ? `https://wa.me/91${matchingBooking.customer_phone.replace(/\D/g, '').slice(-10)}?text=${encodeURIComponent(
+                        `Hello ${matchingBooking.customer_name}, your booking at ${data.salon.name} is confirmed! Token #${matchingBooking.token_number}, Date: ${matchingBooking.booking_date}, Time: ${matchingBooking.slot_time}.`
+                      )}`
+                    : null;
+
+                  return (
+                    <div
+                      key={n.id}
+                      className="rounded-xl bg-white dark:bg-slate-900 border border-amber-500/30 p-3 flex flex-wrap items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-900 dark:text-slate-100">{n.title}</div>
+                        <div className="text-slate-600 dark:text-slate-400">{n.message}</div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {waHref && (
+                          <a
+                            href={waHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-[11px]"
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                            <span>WhatsApp</span>
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setActiveSubTab('BOOKINGS')}
+                          className="px-2.5 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px]"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Top Bar: Owner Availability + Big Bold Quick Actions */}
           <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-500 shrink-0">
+              <div className="w-11 h-11 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-500 shrink-0">
                 <Sparkles className="w-5 h-5" />
               </div>
               <div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">
-                  {t(lang, 'ownerAvailability')} · {ownerBarber?.name}
+                <div className="text-xs font-bold text-slate-500 dark:text-slate-400">
+                  {ownerBarber?.name} · दुकान स्टेटस
                 </div>
-                <div className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                  Status: <span className="text-amber-600 dark:text-amber-400">{ownerBarber?.availability_status}</span>
+                <div className="text-base font-extrabold text-slate-900 dark:text-slate-100">
+                  <span className="text-amber-600 dark:text-amber-400">{ownerBarber?.availability_status}</span>
                 </div>
               </div>
             </div>
@@ -622,7 +709,7 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
                   key={status}
                   type="button"
                   onClick={() => handleUpdateOwnerAvailability(status)}
-                  className={`px-3 py-2 rounded-xl text-xs font-semibold transition-colors min-h-[40px] ${
+                  className={`px-3.5 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-colors min-h-[42px] ${
                     ownerBarber?.availability_status === status
                       ? 'bg-amber-500 text-slate-950 shadow-sm'
                       : 'bg-slate-100 dark:bg-slate-950 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -633,104 +720,76 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
               ))}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setActiveSubTab('WALKIN')}
-                className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs min-h-[42px]"
+                className="px-4 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm min-h-[46px]"
               >
-                + Walk-in
+                + नया ग्राहक
               </button>
               <button
                 type="button"
                 onClick={() => setActiveSubTab('BILLING')}
-                className="px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-slate-800 text-white font-semibold text-xs hover:opacity-90 min-h-[42px]"
+                className="px-4 py-3 rounded-xl bg-slate-900 dark:bg-slate-800 text-white font-extrabold text-sm hover:opacity-90 min-h-[46px]"
               >
-                New Bill
+                बिल बनाएं
               </button>
               <button
                 type="button"
                 onClick={() => setActiveSubTab('UDHAR')}
-                className="px-4 py-2.5 rounded-xl border border-rose-500/30 text-rose-600 dark:text-rose-400 font-semibold text-xs hover:bg-rose-500/10 min-h-[42px]"
+                className="px-4 py-3 rounded-xl border-2 border-rose-500/30 text-rose-600 dark:text-rose-400 font-extrabold text-sm hover:bg-rose-500/10 min-h-[46px]"
               >
-                Collect Udhar
+                उधार खाता
               </button>
               <button
                 type="button"
                 onClick={() => setActiveSubTab('SETTINGS')}
-                className="px-4 py-2.5 rounded-xl border border-amber-500/40 text-amber-600 dark:text-amber-400 font-semibold text-xs hover:bg-amber-500/10 min-h-[42px]"
+                className="px-4 py-3 rounded-xl border-2 border-amber-500/40 text-amber-600 dark:text-amber-400 font-extrabold text-sm hover:bg-amber-500/10 min-h-[46px]"
               >
-                Banner &amp; Offers
+                फोटो / ऑफर
               </button>
             </div>
           </div>
 
-          {/* Primary 4 Financial Pulse Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Primary 4 Financial Pulse Cards (Clean, Big & Bold) */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
             <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4">
-              <div className="text-xs text-slate-500 dark:text-slate-400">{t(lang, 'todayTotalSales')}</div>
+              <div className="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-400">आज की बिक्री</div>
               <div className="font-mono text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-slate-100 mt-1 tabular-nums">
                 ₹{dashboardStats.todayTotalSales}
               </div>
-              <div className="text-xs text-slate-500 mt-1">Today&apos;s billed value</div>
+              <div className="text-xs font-bold text-slate-500 mt-1">
+                बुकिंग: {dashboardStats.todayBookingsCount}
+              </div>
             </div>
 
             <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4">
-              <div className="text-xs text-slate-500 dark:text-slate-400">{t(lang, 'todayCollected')}</div>
+              <div className="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-400">आज की कमाई (Cash+UPI)</div>
               <div className="font-mono text-2xl sm:text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">
                 ₹{dashboardStats.todayCollected}
               </div>
-              <div className="text-xs text-slate-500 mt-1">
+              <div className="text-xs font-bold text-slate-500 mt-1">
                 Cash ₹{dashboardStats.todayCash} · UPI ₹{dashboardStats.todayUpi}
               </div>
             </div>
 
             <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4">
-              <div className="text-xs text-slate-500 dark:text-slate-400">{t(lang, 'netCollection')}</div>
+              <div className="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-400">शुद्ध बचत (Net)</div>
               <div className="font-mono text-2xl sm:text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">
                 ₹{dashboardStats.netCollection}
               </div>
-              <div className="text-xs text-slate-500 mt-1">
-                Expenses today: ₹{dashboardStats.todayExpenses}
+              <div className="text-xs font-bold text-slate-500 mt-1">
+                खर्च: ₹{dashboardStats.todayExpenses}
               </div>
             </div>
 
             <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4">
-              <div className="text-xs text-slate-500 dark:text-slate-400">{t(lang, 'outstandingUdhar')}</div>
+              <div className="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-400">बकाया उधार</div>
               <div className="font-mono text-2xl sm:text-3xl font-extrabold text-rose-600 dark:text-rose-400 mt-1 tabular-nums">
                 ₹{dashboardStats.totalOutstandingUdhar}
               </div>
-              <div className="text-xs text-slate-500 mt-1">Total pending dues</div>
-            </div>
-          </div>
-
-          {/* Secondary Operational Metrics */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3.5">
-              <div className="text-[11px] text-slate-500">{t(lang, 'cashPayments')}</div>
-              <div className="font-mono text-lg font-bold mt-0.5 tabular-nums">₹{dashboardStats.todayCash}</div>
-            </div>
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3.5">
-              <div className="text-[11px] text-slate-500">{t(lang, 'upiPayments')}</div>
-              <div className="font-mono text-lg font-bold text-blue-600 dark:text-blue-400 mt-0.5 tabular-nums">₹{dashboardStats.todayUpi}</div>
-            </div>
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3.5">
-              <div className="text-[11px] text-slate-500">{t(lang, 'ownerPersonalWork')}</div>
-              <div className="font-mono text-lg font-bold text-amber-600 dark:text-amber-400 mt-0.5 tabular-nums">
-                ₹{dashboardStats.ownerTodayRevenue}
-              </div>
-            </div>
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3.5">
-              <div className="text-[11px] text-slate-500">{t(lang, 'todayBookings')}</div>
-              <div className="font-mono text-lg font-bold mt-0.5 tabular-nums">{dashboardStats.todayBookingsCount}</div>
-            </div>
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3.5">
-              <div className="text-[11px] text-slate-500">{t(lang, 'walkInCustomers')}</div>
-              <div className="font-mono text-lg font-bold mt-0.5 tabular-nums">{dashboardStats.todayWalkInsCount}</div>
-            </div>
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-3.5">
-              <div className="text-[11px] text-slate-500">{t(lang, 'totalCustomers')}</div>
-              <div className="font-mono text-lg font-bold mt-0.5 tabular-nums">{dashboardStats.totalCustomers}</div>
+              <div className="text-xs font-bold text-slate-500 mt-1">ग्राहक: {dashboardStats.totalCustomers}</div>
             </div>
           </div>
 
@@ -772,21 +831,30 @@ export const OwnerOperationsViews: React.FC<OwnerOperationsViewsProps> = ({
                           </div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {b.status === 'WAITING' && (
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateBookingStatus(b.id, 'IN_PROGRESS')}
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-extrabold text-xs hover:bg-amber-400"
+                          >
+                            शुरू करें
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => openEditBookingModal(b)}
-                          className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold hover:border-amber-500"
+                          className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-bold hover:border-amber-500"
                           title="Edit time, date, or price"
                         >
-                          Edit
+                          समय बदलें
                         </button>
                         <button
                           type="button"
                           onClick={() => openBillingForBooking(b)}
-                          className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-500"
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-extrabold text-xs hover:bg-emerald-500"
                         >
-                          Bill ₹{b.total_amount}
+                          बिल ₹{b.total_amount}
                         </button>
                       </div>
                     </div>
