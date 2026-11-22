@@ -670,13 +670,11 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
             ))}
           </nav>
 
-          <button
-            type="button"
-            onClick={onOpenLogin}
-            className="px-3 py-1.5 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[11px] font-bold text-slate-600 dark:text-slate-300 shadow-sm hover:border-[#6C3BF5]/50 whitespace-nowrap"
-          >
-            {customerPhone ? `••${customerPhone.slice(-4)} · Switch` : 'Login'}
-          </button>
+          {customerPhone ? (
+            <span className="text-[11px] font-bold text-slate-400 tabular-nums whitespace-nowrap">
+              ••{customerPhone.slice(-4)}
+            </span>
+          ) : null}
         </div>
       </header>
 
@@ -1119,10 +1117,10 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
               </div>
             )}
 
-            {/* Hero Gradient Card */}
-            <div className="sb-gradient rounded-3xl p-4 text-white shadow-xl shadow-purple-500/20 flex items-center justify-between gap-4">
-              <div className="space-y-0.5 min-w-0">
-                <div className="text-[10px] font-extrabold tracking-wider uppercase text-white/80">
+            {/* Hero Gradient Card (Enlarged matching PDF Page 2) */}
+            <div className="sb-gradient rounded-3xl p-5 sm:p-6 min-h-[138px] text-white shadow-xl shadow-purple-500/20 flex items-center justify-between gap-4">
+              <div className="space-y-1 min-w-0">
+                <div className="text-[11px] font-extrabold tracking-wider uppercase text-white/85">
                   {myTrackedBooking
                     ? myTrackedBooking.status === 'IN_PROGRESS'
                       ? 'ABHI CHAL RAHA HAI'
@@ -1131,17 +1129,17 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                       : 'AAPSE PEHLE'
                     : 'LIVE SALON LINE'}
                 </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-4xl font-extrabold tabular-nums leading-none">
+                <div className="flex items-baseline gap-2.5">
+                  <span className="text-5xl font-extrabold tabular-nums leading-none">
                     {myTrackedBooking
                       ? myTrackedBooking.status === 'IN_PROGRESS'
                         ? '0'
                         : aheadBookings.length
                       : aheadBookings.length}
                   </span>
-                  <span className="text-base font-bold text-white/90">log</span>
+                  <span className="text-lg font-bold text-white/90">log</span>
                 </div>
-                <div className="text-xs font-semibold text-white/90 truncate pt-0.5">
+                <div className="text-xs sm:text-sm font-semibold text-white/90 truncate pt-1">
                   {myTrackedBooking
                     ? `Aapka token #${myTrackedBooking.token_number} · ${
                         myTrackedBooking.services?.map((s) => s.service_name).join(' + ') ||
@@ -1151,33 +1149,37 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 </div>
               </div>
 
-              {/* Circular Progress Ring (~25 min) */}
-              <div className="relative w-18 h-18 shrink-0 flex items-center justify-center">
-                <svg className="w-18 h-18 -rotate-90" viewBox="0 0 80 80">
+              {/* Large Circular Progress Ring matching PDF Page 2 */}
+              <div className="relative w-24 h-24 shrink-0 flex items-center justify-center">
+                <svg className="w-24 h-24 -rotate-90" viewBox="0 0 96 96">
                   <circle
-                    cx="40"
-                    cy="40"
-                    r="32"
+                    cx="48"
+                    cy="48"
+                    r="38"
                     fill="none"
                     stroke="rgba(255,255,255,0.22)"
-                    strokeWidth="6"
+                    strokeWidth="7.5"
                   />
                   <circle
-                    cx="40"
-                    cy="40"
-                    r="32"
+                    cx="48"
+                    cy="48"
+                    r="38"
                     fill="none"
                     stroke="#ffffff"
-                    strokeWidth="6"
+                    strokeWidth="7.5"
                     strokeLinecap="round"
-                    strokeDasharray={`${Math.max(30, Math.min(201, 201 - estWaitMins * 3))} 201`}
+                    strokeDasharray={`${
+                      estWaitMins === 0
+                        ? 60
+                        : Math.max(48, Math.min(200, 239 - estWaitMins * 3))
+                    } 239`}
                   />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                  <span className="text-sm font-extrabold leading-none tabular-nums">
+                  <span className="text-lg font-extrabold leading-none tabular-nums">
                     ~{estWaitMins}
                   </span>
-                  <span className="text-[10px] font-bold text-white/85">min</span>
+                  <span className="text-xs font-bold text-white/85 mt-0.5">min</span>
                 </div>
               </div>
             </div>
@@ -1300,9 +1302,8 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
             {/* Notification Promise / Latest Hindi Alert Banner */}
             <div className="rounded-2xl bg-[#EDE9FE] dark:bg-purple-950/40 px-3.5 py-3 flex items-center gap-2.5 text-xs font-bold text-[#5B21B6] dark:text-purple-200">
               <Bell className="w-4 h-4 text-amber-500 shrink-0" />
-              <span className="truncate">
-                {myTokenAlerts[0]?.message ||
-                  '1 log bachega tab WhatsApp aur app par alert milega'}
+              <span className="leading-snug">
+                {myTokenAlerts[0]?.message || '1 log bachega tab WhatsApp karenge'}
               </span>
             </div>
           </div>

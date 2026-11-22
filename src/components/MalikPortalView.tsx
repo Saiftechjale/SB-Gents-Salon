@@ -1,17 +1,25 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import QRCode from 'qrcode';
 import {
+  Check,
   Download,
   FileSpreadsheet,
+  Lock,
+  LogOut,
   MessageCircle,
+  Pencil,
   Plus,
+  QrCode,
   Settings as SettingsIcon,
+  ShieldCheck,
   Trash2,
   TrendingUp,
   UserCheck,
   Users,
   Wifi,
+  X,
 } from 'lucide-react';
-import type { SalonBootstrapData } from '../types/salon';
+import type { Customer, SalonBootstrapData, ServiceItem, StaffMember } from '../types/salon';
 import { apiFetch, getApiBaseUrl, setApiBaseUrl, setPhoneOfflineMode } from '../lib/api';
 import { exportReportToExcel, exportReportToPDF } from '../lib/exportReports';
 import {
@@ -29,6 +37,7 @@ interface MalikPortalViewProps {
   notify: (type: 'success' | 'error', message: string) => void;
   onSwitchRole: (role: AppPortalRole) => void;
   onOpenLogin: () => void;
+  onLogout?: () => void;
   onServerUrlUpdated?: () => Promise<void>;
 }
 
@@ -38,6 +47,7 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   notify,
   onSwitchRole,
   onOpenLogin,
+  onLogout,
   onServerUrlUpdated,
 }) => {
   const [activeTab, setActiveTab] = useState<MalikTab>('KAMAI');
@@ -151,52 +161,172 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     return { rows, grandTotal };
   }, [data.staff, data.commissions, commPeriod, todayStr]);
 
-  // Add Staff inline toggle
+  // Add / Edit / Delete Staff state
   const [showAddStaff, setShowAddStaff] = useState(false);
   const [newStaffName, setNewStaffName] = useState('');
   const [newStaffPhone, setNewStaffPhone] = useState('');
   const [newStaffPct, setNewStaffPct] = useState('40');
+  const [newStaffSpecialty, setNewStaffSpecialty] = useState('Senior Barber');
+  const [editingStaffId, setEditingStaffId] = useState<string>('');
+  const [editStaffName, setEditStaffName] = useState('');
+  const [editStaffPhone, setEditStaffPhone] = useState('');
+  const [editStaffPct, setEditStaffPct] = useState('40');
+  const [editStaffSpecialty, setEditStaffSpecialty] = useState('');
+  const [confirmDeleteStaffId, setConfirmDeleteStaffId] = useState<string>('');
 
-  // Customers & Udhar
+  // Customers, Udhar, Edit & Delete state
   const [custSearch, setCustSearch] = useState('');
   const [settleId, setSettleId] = useState('');
   const [settleAmt, setSettleAmt] = useState('');
   const [settleMode, setSettleMode] = useState<'CASH' | 'UPI'>('CASH');
+  const [editingCustId, setEditingCustId] = useState<string>('');
+  const [editCustName, setEditCustName] = useState('');
+  const [editCustPhone, setEditCustPhone] = useState('');
+  const [editCustPref, setEditCustPref] = useState('');
+  const [confirmDeleteCustId, setConfirmDeleteCustId] = useState<string>('');
 
-  // Settings form state
+  // Settings & Customization form state
   const [salonName, setSalonName] = useState(data.salon.name);
   const [salonPhone, setSalonPhone] = useState(data.salon.phone);
   const [salonAddress, setSalonAddress] = useState(data.salon.address);
   const [upiId, setUpiId] = useState(data.settings.upi_id || '');
   const [openTime, setOpenTime] = useState(data.settings.opening_time);
   const [closeTime, setCloseTime] = useState(data.settings.closing_time);
+  const [slotDuration, setSlotDuration] = useState(String(data.settings.slot_duration_minutes || 30));
+  const [regenSlots, setRegenSlots] = useState(false);
+  const [hideStaffLogin, setHideStaffLogin] = useState(Boolean(data.settings.hide_staff_login));
+  const [customerApkUrl, setCustomerApkUrl] = useState(
+    data.settings.customer_apk_url ||
+      (typeof window !== 'undefined' && window.location.origin.startsWith('http')
+        ? window.location.origin
+        : '')
+  );
+  const [customerQrDataUrl, setCustomerQrDataUrl] = useState<string>('');
+
+  // Services Add / Edit / Delete state
   const [newSrvName, setNewSrvName] = useState('');
   const [newSrvPrice, setNewSrvPrice] = useState('');
+  const [newSrvDuration, setNewSrvDuration] = useState('30');
+  const [editingServiceId, setEditingServiceId] = useState<string>('');
+  const [editSrvName, setEditSrvName] = useState('');
+  const [editSrvNameHi, setEditSrvNameHi] = useState('');
+  const [editSrvPrice, setEditSrvPrice] = useState('');
+  const [editSrvDuration, setEditSrvDuration] = useState('30');
+  const [editSrvActive, setEditSrvActive] = useState(true);
+  const [confirmDeleteSrvId, setConfirmDeleteSrvId] = useState<string>('');
+
+  // Expenses Add & List state
   const [newExpTitle, setNewExpTitle] = useState('');
   const [newExpAmt, setNewExpAmt] = useState('');
+  const [newExpMode, setNewExpMode] = useState<'CASH' | 'UPI'>('CASH');
   const [ownerPin, setOwnerPin] = useState('');
   const [staffPin, setStaffPin] = useState('');
   const [serverUrlDraft, setServerUrlDraft] = useState(() => getApiBaseUrl());
 
+  useEffect(() => {
+    setSalonName(data.salon.name);
+    setSalonPhone(data.salon.phone);
+    setSalonAddress(data.salon.address);
+    setUpiId(data.settings.upi_id || '');
+    setOpenTime(data.settings.opening_time);
+    setCloseTime(data.settings.closing_time);
+    setSlotDuration(String(data.settings.slot_duration_minutes || 30));
+    setHideStaffLogin(Boolean(data.settings.hide_staff_login));
+    if (data.settings.customer_apk_url) {
+      setCustomerApkUrl(data.settings.customer_apk_url);
+    }
+  }, [data.salon, data.settings]);
+
+  useEffect(() => {
+    const clean = customerApkUrl.trim();
+    if (!clean || !/^https?:\/\//i.test(clean)) {
+      setCustomerQrDataUrl('');
+      return;
+    }
+    QRCode.toDataURL(clean, { width: 260, margin: 2 })
+      .then((url) => setCustomerQrDataUrl(url))
+      .catch(() => setCustomerQrDataUrl(''));
+  }, [customerApkUrl]);
+
+  const handleApiError = async (res: Response, fallbackMsg: string): Promise<boolean> => {
+    if (res.ok) return true;
+    try {
+      const err = await res.json();
+      notify('error', err.error || fallbackMsg);
+    } catch {
+      notify('error', fallbackMsg);
+    }
+    if (res.status === 401) {
+      onOpenLogin();
+    }
+    return false;
+  };
+
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newStaffName.trim()) return;
+    const cleanPhone = newStaffPhone.replace(/\D/g, '').slice(-10);
+    if (!newStaffName.trim() || cleanPhone.length !== 10) {
+      notify('error', 'Staff ka naam aur 10-digit mobile number zaroori hai');
+      return;
+    }
     const res = await apiFetch('/api/staff', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: newStaffName.trim(),
-        phone: newStaffPhone.trim() || '9800000000',
+        phone: cleanPhone,
+        specialty: newStaffSpecialty.trim() || 'Senior Barber',
         commission_pct: Number(newStaffPct || 40),
       }),
     });
-    if (res.ok) {
-      setNewStaffName('');
-      setNewStaffPhone('');
-      setShowAddStaff(false);
-      await onRefresh();
-      notify('success', 'New staff added!');
+    if (!(await handleApiError(res, 'Staff add nahi ho paya'))) return;
+    setNewStaffName('');
+    setNewStaffPhone('');
+    setNewStaffSpecialty('Senior Barber');
+    setShowAddStaff(false);
+    await onRefresh();
+    notify('success', 'New staff added!');
+  };
+
+  const startEditStaff = (st: StaffMember) => {
+    setEditingStaffId(st.id);
+    setEditStaffName(st.name);
+    setEditStaffPhone(st.phone);
+    setEditStaffPct(String(st.commission_pct));
+    setEditStaffSpecialty(st.specialty || '');
+    setConfirmDeleteStaffId('');
+  };
+
+  const handleSaveStaffEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStaffId) return;
+    const cleanPhone = editStaffPhone.replace(/\D/g, '').slice(-10);
+    if (!editStaffName.trim() || cleanPhone.length !== 10) {
+      notify('error', 'Staff ka sahi naam aur 10-digit mobile number daalein');
+      return;
     }
+    const res = await apiFetch(`/api/staff/${editingStaffId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: editStaffName.trim(),
+        phone: cleanPhone,
+        commission_pct: Number(editStaffPct || 0),
+        specialty: editStaffSpecialty.trim(),
+      }),
+    });
+    if (!(await handleApiError(res, 'Staff update nahi ho paya'))) return;
+    setEditingStaffId('');
+    await onRefresh();
+    notify('success', 'Staff details updated!');
+  };
+
+  const handleDeleteStaff = async (id: string) => {
+    const res = await apiFetch(`/api/staff/${id}`, { method: 'DELETE' });
+    if (!(await handleApiError(res, 'Staff remove nahi ho paya'))) return;
+    setConfirmDeleteStaffId('');
+    await onRefresh();
+    notify('success', 'Staff removed!');
   };
 
   const handleSettleUdhar = async (e: React.FormEvent) => {
@@ -211,32 +341,103 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
         payment_mode: settleMode,
       }),
     });
-    if (res.ok) {
-      setSettleId('');
-      setSettleAmt('');
-      await onRefresh();
-      notify('success', 'Udhar balance updated!');
+    if (!(await handleApiError(res, 'Udhar update nahi hua'))) return;
+    setSettleId('');
+    setSettleAmt('');
+    await onRefresh();
+    notify('success', 'Udhar balance updated!');
+  };
+
+  const startEditCustomer = (c: Customer) => {
+    setEditingCustId(c.id);
+    setEditCustName(c.name);
+    setEditCustPhone(c.phone);
+    setEditCustPref(c.haircut_preference || '');
+    setConfirmDeleteCustId('');
+  };
+
+  const handleSaveCustomerEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCustId) return;
+    const cleanPhone = editCustPhone.replace(/\D/g, '').slice(-10);
+    if (!editCustName.trim() || cleanPhone.length !== 10) {
+      notify('error', 'Customer naam aur 10-digit mobile number daalein');
+      return;
     }
+    const res = await apiFetch(`/api/customers/${editingCustId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: editCustName.trim(),
+        phone: cleanPhone,
+        haircut_preference: editCustPref.trim(),
+      }),
+    });
+    if (!(await handleApiError(res, 'Customer update nahi hua'))) return;
+    setEditingCustId('');
+    await onRefresh();
+    notify('success', 'Customer details updated!');
+  };
+
+  const handleDeleteCustomer = async (id: string) => {
+    const res = await apiFetch(`/api/customers/${id}`, { method: 'DELETE' });
+    if (!(await handleApiError(res, 'Customer delete nahi ho paya'))) return;
+    setConfirmDeleteCustId('');
+    await onRefresh();
+    notify('success', 'Customer removed!');
   };
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    const cleanSalonPhone = salonPhone.replace(/\D/g, '').slice(-10);
+    if (!salonName.trim()) {
+      notify('error', 'Salon ka naam daalein');
+      return;
+    }
+    if (cleanSalonPhone.length !== 10) {
+      notify('error', 'Owner ka 10-digit registered mobile number daalein');
+      return;
+    }
     const res = await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         salon_name: salonName.trim(),
-        salon_phone: salonPhone.trim(),
+        salon_phone: cleanSalonPhone,
         salon_address: salonAddress.trim(),
         upi_id: upiId.trim(),
+        upi_merchant_name: salonName.trim(),
         opening_time: openTime,
         closing_time: closeTime,
+        slot_duration_minutes: Number(slotDuration || 30),
+        hide_staff_login: hideStaffLogin,
+        customer_apk_url: customerApkUrl.trim(),
+        regenerate_slots: regenSlots,
       }),
     });
-    if (res.ok) {
-      await onRefresh();
-      notify('success', 'Salon settings saved!');
+    if (!(await handleApiError(res, 'Settings save nahi hui'))) return;
+    setRegenSlots(false);
+    await onRefresh();
+    notify('success', 'Salon settings saved!');
+  };
+
+  const handleToggleCustomerLock = async () => {
+    const nextVal = !hideStaffLogin;
+    setHideStaffLogin(nextVal);
+    const res = await apiFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hide_staff_login: nextVal }),
+    });
+    if (!(await handleApiError(res, 'Lock setting save nahi hui'))) {
+      setHideStaffLogin(!nextVal);
+      return;
     }
+    await onRefresh();
+    notify(
+      'success',
+      nextVal ? 'Customer Lock ON: Staff/Malik login hidden from customers' : 'Customer Lock OFF'
+    );
   };
 
   const handleAddService = async (e: React.FormEvent) => {
@@ -250,23 +451,53 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
         name_hi: newSrvName.trim(),
         category: 'Hair',
         price: Number(newSrvPrice),
-        duration_minutes: 30,
+        duration_minutes: Number(newSrvDuration || 30),
       }),
     });
-    if (res.ok) {
-      setNewSrvName('');
-      setNewSrvPrice('');
-      await onRefresh();
-      notify('success', 'Service added!');
-    }
+    if (!(await handleApiError(res, 'Service add nahi hui'))) return;
+    setNewSrvName('');
+    setNewSrvPrice('');
+    setNewSrvDuration('30');
+    await onRefresh();
+    notify('success', 'Service added!');
+  };
+
+  const startEditService = (s: ServiceItem) => {
+    setEditingServiceId(s.id);
+    setEditSrvName(s.name);
+    setEditSrvNameHi(s.name_hi || s.name);
+    setEditSrvPrice(String(s.price));
+    setEditSrvDuration(String(s.duration_minutes || 30));
+    setEditSrvActive(s.is_active);
+    setConfirmDeleteSrvId('');
+  };
+
+  const handleSaveServiceEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingServiceId || !editSrvName.trim() || editSrvPrice === '') return;
+    const res = await apiFetch(`/api/services/${editingServiceId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: editSrvName.trim(),
+        name_hi: editSrvNameHi.trim() || editSrvName.trim(),
+        price: Math.max(0, Number(editSrvPrice)),
+        duration_minutes: Math.max(5, Number(editSrvDuration || 30)),
+        is_active: editSrvActive,
+      }),
+    });
+    if (!(await handleApiError(res, 'Service update nahi hui'))) return;
+    setEditingServiceId('');
+    await onRefresh();
+    notify('success', 'Service price & details updated!');
   };
 
   const handleDeleteService = async (id: string) => {
     const res = await apiFetch(`/api/services/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      await onRefresh();
-      notify('success', 'Service removed');
-    }
+    if (!(await handleApiError(res, 'Service delete nahi hui'))) return;
+    setConfirmDeleteSrvId('');
+    await onRefresh();
+    notify('success', 'Service removed');
   };
 
   const handleAddExpense = async (e: React.FormEvent) => {
@@ -279,16 +510,22 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
         title: newExpTitle.trim(),
         category: 'Shop Supplies',
         amount: Number(newExpAmt),
-        payment_mode: 'CASH',
+        payment_mode: newExpMode,
         expense_date: todayStr,
       }),
     });
-    if (res.ok) {
-      setNewExpTitle('');
-      setNewExpAmt('');
-      await onRefresh();
-      notify('success', 'Expense recorded!');
-    }
+    if (!(await handleApiError(res, 'Expense save nahi hua'))) return;
+    setNewExpTitle('');
+    setNewExpAmt('');
+    await onRefresh();
+    notify('success', 'Expense recorded!');
+  };
+
+  const handleDeleteExpense = async (id: string) => {
+    const res = await apiFetch(`/api/expenses/${id}`, { method: 'DELETE' });
+    if (!(await handleApiError(res, 'Expense delete nahi hua'))) return;
+    await onRefresh();
+    notify('success', 'Expense deleted');
   };
 
   const handleSavePins = async (e: React.FormEvent) => {
@@ -302,11 +539,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
         staffPin: staffPin.trim() || undefined,
       }),
     });
-    if (res.ok) {
-      setOwnerPin('');
-      setStaffPin('');
-      notify('success', 'Security PINs updated!');
-    }
+    if (!(await handleApiError(res, 'PIN update nahi hua'))) return;
+    setOwnerPin('');
+    setStaffPin('');
+    notify('success', 'Security PINs updated!');
   };
 
   const commissionWaText = encodeURIComponent(
@@ -561,7 +797,7 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
 
             {showAddStaff && (
               <form onSubmit={handleAddStaff} className="sb-card p-4 space-y-2.5">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <input
                     type="text"
                     required
@@ -572,16 +808,26 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                   />
                   <input
                     type="tel"
+                    required
                     value={newStaffPhone}
                     onChange={(e) => setNewStaffPhone(e.target.value)}
-                    placeholder="Phone"
+                    placeholder="10-digit Login Mobile"
                     className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                   />
                   <input
                     type="number"
+                    min={0}
+                    max={100}
                     value={newStaffPct}
                     onChange={(e) => setNewStaffPct(e.target.value)}
                     placeholder="Commission %"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  />
+                  <input
+                    type="text"
+                    value={newStaffSpecialty}
+                    onChange={(e) => setNewStaffSpecialty(e.target.value)}
+                    placeholder="Specialty (e.g. Fade & Beard)"
                     className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                   />
                 </div>
@@ -618,37 +864,127 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
               ))}
             </div>
 
-            {/* Staff List Card */}
+            {/* Staff List Card (with Edit & Delete) */}
             <div className="sb-card overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
-              {staffCommissions.rows.map((r) => (
-                <div key={r.staff.id} className="px-4 py-3.5 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      className={`w-10 h-10 rounded-full text-sm font-extrabold flex items-center justify-center shrink-0 ${getAvatarColorClass(
-                        r.idx
-                      )}`}
-                    >
-                      {getSingleInitial(r.staff.name)}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
-                        {r.staff.name.split(' ')[0]}
+              {staffCommissions.rows.map((r) => {
+                const isEditing = editingStaffId === r.staff.id;
+                const isConfirmDelete = confirmDeleteStaffId === r.staff.id;
+                return (
+                  <div key={r.staff.id} className="px-4 py-3.5 space-y-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className={`w-10 h-10 rounded-full text-sm font-extrabold flex items-center justify-center shrink-0 ${getAvatarColorClass(
+                            r.idx
+                          )}`}
+                        >
+                          {getSingleInitial(r.staff.name)}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                            {r.staff.name}
+                          </div>
+                          <div className="text-[11px] text-slate-500 tabular-nums truncate">
+                            +91 {r.staff.phone} · {r.custCount} customers · ₹{r.totalWork.toLocaleString('en-IN')}
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-500 tabular-nums">
-                        {r.custCount} customers · ₹{r.totalWork.toLocaleString('en-IN')}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="text-right">
+                          <div className="text-[11px] font-bold text-slate-400 tabular-nums">
+                            {r.staff.commission_pct}%
+                          </div>
+                          <div className="text-sm font-extrabold text-emerald-600 tabular-nums">
+                            ₹{r.totalComm.toLocaleString('en-IN')}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => (isEditing ? setEditingStaffId('') : startEditStaff(r.staff))}
+                          className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                          aria-label="Edit staff"
+                        >
+                          {isEditing ? <X className="w-3.5 h-3.5" /> : <Pencil className="w-3.5 h-3.5" />}
+                        </button>
+                        {!r.staff.is_owner &&
+                          (isConfirmDelete ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteStaff(r.staff.id)}
+                                className="px-2 py-1.5 rounded-lg bg-rose-600 text-white text-[10px] font-extrabold"
+                              >
+                                Hatao
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteStaffId('')}
+                                className="px-2 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-[10px] font-bold"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteStaffId(r.staff.id)}
+                              className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/30 text-rose-500"
+                              aria-label="Delete staff"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          ))}
                       </div>
                     </div>
+
+                    {isEditing && (
+                      <form onSubmit={handleSaveStaffEdit} className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <input
+                            type="text"
+                            required
+                            value={editStaffName}
+                            onChange={(e) => setEditStaffName(e.target.value)}
+                            placeholder="Staff Name"
+                            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                          />
+                          <input
+                            type="tel"
+                            required
+                            value={editStaffPhone}
+                            onChange={(e) => setEditStaffPhone(e.target.value)}
+                            placeholder="10-digit Phone"
+                            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                          />
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={editStaffPct}
+                            onChange={(e) => setEditStaffPct(e.target.value)}
+                            placeholder="Commission %"
+                            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                          />
+                          <input
+                            type="text"
+                            value={editStaffSpecialty}
+                            onChange={(e) => setEditStaffSpecialty(e.target.value)}
+                            placeholder="Specialty"
+                            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          className="w-full py-2 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Save Changes</span>
+                        </button>
+                      </form>
+                    )}
                   </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-[11px] font-bold text-slate-400 tabular-nums">
-                      {r.staff.commission_pct}%
-                    </div>
-                    <div className="text-base font-extrabold text-emerald-600 tabular-nums">
-                      ₹{r.totalComm.toLocaleString('en-IN')}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Dark Total Commission Card */}
@@ -731,32 +1067,112 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                     c.name.toLowerCase().includes(custSearch.toLowerCase()) ||
                     c.phone.includes(custSearch)
                 )
-                .map((c) => (
-                  <div key={c.id} className="px-4 py-3.5 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
-                        {c.name}
+                .map((c) => {
+                  const isEditing = editingCustId === c.id;
+                  const isConfirmDelete = confirmDeleteCustId === c.id;
+                  return (
+                    <div key={c.id} className="px-4 py-3.5 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                            {c.name}
+                          </div>
+                          <div className="text-xs text-slate-500 tabular-nums">
+                            +91 {c.phone} · {c.total_visits} visits · ₹{c.total_spent} spent
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {c.outstanding_due > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSettleId(c.id);
+                                setSettleAmt(String(c.outstanding_due));
+                              }}
+                              className="px-2.5 py-1.5 rounded-full bg-rose-100 text-rose-700 text-[11px] font-extrabold tabular-nums"
+                            >
+                              Udhar ₹{c.outstanding_due}
+                            </button>
+                          ) : (
+                            <span className="text-[11px] font-bold text-emerald-600 px-1.5">Clear</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => (isEditing ? setEditingCustId('') : startEditCustomer(c))}
+                            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                            aria-label="Edit customer"
+                          >
+                            {isEditing ? <X className="w-3.5 h-3.5" /> : <Pencil className="w-3.5 h-3.5" />}
+                          </button>
+                          {isConfirmDelete ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteCustomer(c.id)}
+                                className="px-2 py-1.5 rounded-lg bg-rose-600 text-white text-[10px] font-extrabold"
+                              >
+                                Hatao
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteCustId('')}
+                                className="px-2 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-[10px] font-bold"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteCustId(c.id)}
+                              className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/30 text-rose-500"
+                              aria-label="Delete customer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-500 tabular-nums">
-                        +91 {c.phone} · {c.total_visits} visits · ₹{c.total_spent} spent
-                      </div>
+
+                      {isEditing && (
+                        <form onSubmit={handleSaveCustomerEdit} className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <input
+                              type="text"
+                              required
+                              value={editCustName}
+                              onChange={(e) => setEditCustName(e.target.value)}
+                              placeholder="Customer Name"
+                              className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                            />
+                            <input
+                              type="tel"
+                              required
+                              value={editCustPhone}
+                              onChange={(e) => setEditCustPhone(e.target.value)}
+                              placeholder="10-digit Mobile"
+                              className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                            />
+                          </div>
+                          <input
+                            type="text"
+                            value={editCustPref}
+                            onChange={(e) => setEditCustPref(e.target.value)}
+                            placeholder="Haircut Preference Note"
+                            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                          />
+                          <button
+                            type="submit"
+                            className="w-full py-2 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Save Customer</span>
+                          </button>
+                        </form>
+                      )}
                     </div>
-                    {c.outstanding_due > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSettleId(c.id);
-                          setSettleAmt(String(c.outstanding_due));
-                        }}
-                        className="px-3 py-1.5 rounded-full bg-rose-100 text-rose-700 text-xs font-extrabold tabular-nums shrink-0"
-                      >
-                        Udhar ₹{c.outstanding_due}
-                      </button>
-                    ) : (
-                      <span className="text-xs font-bold text-emerald-600 shrink-0">Clear</span>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
             </div>
           </div>
         )}
@@ -769,55 +1185,103 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                 Settings
               </h1>
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                Salon details, UPI ID, Services, Expenses aur PIN
+                Salon customization, Services, Security & Customer QR
               </p>
             </div>
 
+            {/* 1. Salon Customization */}
             <form onSubmit={handleSaveSettings} className="sb-card p-4 space-y-3">
               <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                Salon & UPI Setup
+                Salon Customization & Timing
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <input
-                  type="text"
-                  value={salonName}
-                  onChange={(e) => setSalonName(e.target.value)}
-                  placeholder="Salon Name"
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
-                />
-                <input
-                  type="tel"
-                  value={salonPhone}
-                  onChange={(e) => setSalonPhone(e.target.value)}
-                  placeholder="WhatsApp / Salon Phone"
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
-                />
-                <input
-                  type="text"
-                  value={upiId}
-                  onChange={(e) => setUpiId(e.target.value)}
-                  placeholder="Shop UPI ID"
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
-                />
-                <input
-                  type="text"
-                  value={salonAddress}
-                  onChange={(e) => setSalonAddress(e.target.value)}
-                  placeholder="Shop Address"
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
-                />
-                <input
-                  type="time"
-                  value={openTime}
-                  onChange={(e) => setOpenTime(e.target.value)}
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
-                />
-                <input
-                  type="time"
-                  value={closeTime}
-                  onChange={(e) => setCloseTime(e.target.value)}
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
-                />
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-400">Salon Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={salonName}
+                    onChange={(e) => setSalonName(e.target.value)}
+                    placeholder="Apne Salon ka Naam"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-400">
+                    Owner Login Mobile
+                  </label>
+                  <input
+                    type="tel"
+                    required
+                    value={salonPhone}
+                    onChange={(e) => setSalonPhone(e.target.value)}
+                    placeholder="10-digit Owner Mobile"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-400">Shop UPI ID</label>
+                  <input
+                    type="text"
+                    value={upiId}
+                    onChange={(e) => setUpiId(e.target.value)}
+                    placeholder="name@upi"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-400">Shop Address</label>
+                  <input
+                    type="text"
+                    value={salonAddress}
+                    onChange={(e) => setSalonAddress(e.target.value)}
+                    placeholder="Shop Address"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-400">Open Time</label>
+                  <input
+                    type="time"
+                    value={openTime}
+                    onChange={(e) => setOpenTime(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-400">Close Time</label>
+                  <input
+                    type="time"
+                    value={closeTime}
+                    onChange={(e) => setCloseTime(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
+                  />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] font-bold text-slate-500">Slot:</label>
+                  <select
+                    value={slotDuration}
+                    onChange={(e) => setSlotDuration(e.target.value)}
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-2.5 py-1.5 text-xs font-bold"
+                  >
+                    <option value="15">15 min</option>
+                    <option value="20">20 min</option>
+                    <option value="30">30 min</option>
+                    <option value="45">45 min</option>
+                    <option value="60">60 min</option>
+                  </select>
+                </div>
+                <label className="flex items-center gap-1.5 text-xs font-bold text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={regenSlots}
+                    onChange={(e) => setRegenSlots(e.target.checked)}
+                    className="rounded text-[#6C3BF5]"
+                  />
+                  <span>Update Time Slots</span>
+                </label>
               </div>
               <button
                 type="submit"
@@ -827,25 +1291,36 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
               </button>
             </form>
 
-            {/* Services Quick Manager */}
+            {/* 2. Services Manager (Add + Edit + Delete) */}
             <div className="sb-card p-4 space-y-3">
               <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                Services ({data.services.length})
+                Services & Price ({data.services.length})
               </div>
-              <form onSubmit={handleAddService} className="flex gap-2">
+              <form onSubmit={handleAddService} className="flex flex-wrap gap-2">
                 <input
                   type="text"
+                  required
                   value={newSrvName}
                   onChange={(e) => setNewSrvName(e.target.value)}
                   placeholder="Service Name"
-                  className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  className="flex-1 min-w-[140px] rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                 />
                 <input
                   type="number"
+                  required
+                  min={0}
                   value={newSrvPrice}
                   onChange={(e) => setNewSrvPrice(e.target.value)}
                   placeholder="₹"
                   className="w-20 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                />
+                <input
+                  type="number"
+                  min={5}
+                  value={newSrvDuration}
+                  onChange={(e) => setNewSrvDuration(e.target.value)}
+                  placeholder="Min"
+                  className="w-16 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                 />
                 <button
                   type="submit"
@@ -855,82 +1330,309 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                 </button>
               </form>
               <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                {data.services.map((s) => (
-                  <div key={s.id} className="py-2 flex items-center justify-between text-xs">
-                    <span className="font-bold text-[#141028] dark:text-white">
-                      {s.name} · ₹{s.price}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteService(s.id)}
-                      className="p-1.5 text-rose-500"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
+                {data.services.map((s) => {
+                  const isEditing = editingServiceId === s.id;
+                  const isConfirmDelete = confirmDeleteSrvId === s.id;
+                  return (
+                    <div key={s.id} className="py-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <div className="min-w-0">
+                          <span
+                            className={`font-bold ${
+                              s.is_active
+                                ? 'text-[#141028] dark:text-white'
+                                : 'text-slate-400 line-through'
+                            }`}
+                          >
+                            {s.name} · ₹{s.price}
+                          </span>
+                          <span className="text-[11px] text-slate-400 ml-1.5">
+                            {s.duration_minutes}m
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              isEditing ? setEditingServiceId('') : startEditService(s)
+                            }
+                            className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                            aria-label="Edit service"
+                          >
+                            {isEditing ? (
+                              <X className="w-3.5 h-3.5" />
+                            ) : (
+                              <Pencil className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          {isConfirmDelete ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteService(s.id)}
+                                className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-extrabold"
+                              >
+                                Delete
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteSrvId('')}
+                                className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-slate-800 text-[10px] font-bold"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteSrvId(s.id)}
+                              className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/30 text-rose-500"
+                              aria-label="Delete service"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {isEditing && (
+                        <form
+                          onSubmit={handleSaveServiceEdit}
+                          className="p-2.5 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 space-y-2"
+                        >
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              type="text"
+                              required
+                              value={editSrvName}
+                              onChange={(e) => setEditSrvName(e.target.value)}
+                              placeholder="Service Name"
+                              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-bold"
+                            />
+                            <input
+                              type="text"
+                              value={editSrvNameHi}
+                              onChange={(e) => setEditSrvNameHi(e.target.value)}
+                              placeholder="Hindi Name"
+                              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-bold"
+                            />
+                            <input
+                              type="number"
+                              required
+                              min={0}
+                              value={editSrvPrice}
+                              onChange={(e) => setEditSrvPrice(e.target.value)}
+                              placeholder="Price ₹"
+                              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-bold"
+                            />
+                            <input
+                              type="number"
+                              required
+                              min={5}
+                              value={editSrvDuration}
+                              onChange={(e) => setEditSrvDuration(e.target.value)}
+                              placeholder="Duration (min)"
+                              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-bold"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="flex items-center gap-1.5 text-xs font-bold text-slate-600 dark:text-slate-300 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={editSrvActive}
+                                onChange={(e) => setEditSrvActive(e.target.checked)}
+                              />
+                              <span>Active</span>
+                            </label>
+                            <button
+                              type="submit"
+                              className="px-4 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-extrabold flex items-center gap-1"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Save</span>
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Expenses Quick Entry */}
-            <form onSubmit={handleAddExpense} className="sb-card p-4 space-y-2.5">
+            {/* 3. Expenses Manager (Add + List + Delete) */}
+            <div className="sb-card p-4 space-y-3">
               <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                Aaj ka Kharch
+                Aaj ka Kharch ({data.expenses.length})
               </div>
-              <div className="flex gap-2">
+              <form onSubmit={handleAddExpense} className="flex flex-wrap gap-2">
                 <input
                   type="text"
                   value={newExpTitle}
                   onChange={(e) => setNewExpTitle(e.target.value)}
                   placeholder="Kharch item"
-                  className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  className="flex-1 min-w-[130px] rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                 />
                 <input
                   type="number"
                   value={newExpAmt}
                   onChange={(e) => setNewExpAmt(e.target.value)}
                   placeholder="₹"
-                  className="w-24 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  className="w-20 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                 />
+                <select
+                  value={newExpMode}
+                  onChange={(e) => setNewExpMode(e.target.value as 'CASH' | 'UPI')}
+                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-2.5 py-2 text-xs font-bold"
+                >
+                  <option value="CASH">CASH</option>
+                  <option value="UPI">UPI</option>
+                </select>
                 <button
                   type="submit"
                   className="px-4 py-2 rounded-xl bg-amber-500 text-slate-950 text-xs font-extrabold"
                 >
                   Save
                 </button>
-              </div>
-            </form>
+              </form>
+              {data.expenses.length > 0 && (
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {data.expenses.slice(0, 10).map((ex) => (
+                    <div
+                      key={ex.id}
+                      className="py-2 flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-bold text-[#141028] dark:text-white truncate">
+                          {ex.title}
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          {ex.expense_date} · {ex.payment_mode}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-extrabold text-amber-600 tabular-nums">
+                          ₹{ex.amount}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteExpense(ex.id)}
+                          className="p-1.5 text-rose-500"
+                          aria-label="Delete expense"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
-            {/* Security PINs */}
-            <form onSubmit={handleSavePins} className="sb-card p-4 space-y-2.5">
-              <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                Change Login PINs
+            {/* 4. Security PINs & Customer APK Lock */}
+            <div className="sb-card p-4 space-y-3">
+              <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-[#6C3BF5]" />
+                <span>Security & Customer APK Lock</span>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  value={ownerPin}
-                  onChange={(e) => setOwnerPin(e.target.value)}
-                  placeholder="New Owner/Malik PIN"
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
-                />
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  value={staffPin}
-                  onChange={(e) => setStaffPin(e.target.value)}
-                  placeholder="New Staff PIN"
-                  className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
-                />
+
+              <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs font-extrabold text-[#141028] dark:text-white">
+                    Customer App Lock
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    ON rakhne par customers ko Reception/Staff/Malik tabs nahi dikhenge
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleCustomerLock}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-extrabold shrink-0 transition-colors ${
+                    hideStaffLogin
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  {hideStaffLogin ? 'LOCKED ON' : 'OFF'}
+                </button>
               </div>
-              <button
-                type="submit"
-                className="w-full py-2.5 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold"
-              >
-                Update PINs
-              </button>
-            </form>
+
+              <form onSubmit={handleSavePins} className="space-y-2.5">
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={ownerPin}
+                    onChange={(e) => setOwnerPin(e.target.value)}
+                    placeholder="New Owner/Malik PIN (4-6 digits)"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  />
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={staffPin}
+                    onChange={(e) => setStaffPin(e.target.value)}
+                    placeholder="New Staff PIN (4-6 digits)"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full py-2.5 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold flex items-center justify-center gap-1.5"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Update Security PINs</span>
+                </button>
+              </form>
+            </div>
+
+            {/* 5. Customer APK / Booking QR Code Generator */}
+            <div className="sb-card p-4 space-y-3">
+              <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <QrCode className="w-4 h-4 text-[#6C3BF5]" />
+                <span>Customer APK / App QR Code</span>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={customerApkUrl}
+                  onChange={(e) => setCustomerApkUrl(e.target.value)}
+                  placeholder="https://github.com/.../app.apk ya Salon Link"
+                  className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveSettings}
+                  className="px-4 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold"
+                >
+                  Save
+                </button>
+              </div>
+              {customerQrDataUrl && (
+                <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-4 flex flex-col items-center gap-2.5 text-center">
+                  <div className="text-sm font-extrabold text-[#141028] dark:text-white">
+                    {data.salon.name}
+                  </div>
+                  <img
+                    src={customerQrDataUrl}
+                    alt="Customer Salon QR"
+                    className="w-44 h-44 rounded-2xl bg-white p-2 shadow-sm"
+                  />
+                  <div className="text-[11px] font-semibold text-slate-500">
+                    Customer scan karke APK download ya booking karein
+                  </div>
+                  <a
+                    href={customerQrDataUrl}
+                    download={`${data.salon.name.toLowerCase().replace(/\s+/g, '-')}-qr.png`}
+                    className="px-4 py-2 rounded-xl sb-gradient text-white text-xs font-extrabold flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download QR PNG</span>
+                  </a>
+                </div>
+              )}
+            </div>
 
             {onServerUrlUpdated && (
               <form
@@ -966,13 +1668,25 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
               </form>
             )}
 
-            <button
-              type="button"
-              onClick={onOpenLogin}
-              className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm"
-            >
-              Login Screen / Switch Role
-            </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={onOpenLogin}
+                className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm"
+              >
+                Switch Role / Login Screen
+              </button>
+              {onLogout && (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="w-full py-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 font-extrabold text-sm flex items-center justify-center gap-2"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Logout & Lock</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
       </main>

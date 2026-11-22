@@ -197,6 +197,8 @@ function createInitialDatabase(): DatabaseStore {
     currency_symbol: '₹',
     upi_id: '',
     upi_merchant_name: 'SB Gents Salon',
+    hide_staff_login: false,
+    customer_apk_url: '',
     updated_at: now,
   };
 
@@ -339,6 +341,8 @@ function loadDatabase(): DatabaseStore {
 let db: DatabaseStore = loadDatabase();
 if (db.settings.upi_id === undefined) db.settings.upi_id = '';
 if (!db.settings.upi_merchant_name) db.settings.upi_merchant_name = db.salon.name || 'SB Gents Salon';
+if (db.settings.hide_staff_login === undefined) db.settings.hide_staff_login = false;
+if (db.settings.customer_apk_url === undefined) db.settings.customer_apk_url = '';
 if (!db.securityPins) {
   db.securityPins = { ownerPin: '1234', staffPin: '0000' };
 }
@@ -401,6 +405,68 @@ function checkRateLimit(key: string, maxRequests: number, windowMs: number): boo
   rateLimitWindows.set(key, timestamps);
   return true;
 }
+
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+
+function normalizePhone10(raw: unknown): string {
+  return String(raw || '').replace(/\D/g, '').slice(-10);
+}
+
+function constantTimeMatch(a: string, b: string): boolean {
+  const hashA = crypto.createHash('sha256').update(a).digest();
+  const hashB = crypto.createHash('sha256').update(b).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
+
+function signPortalToken(role: 'OWNER' | 'STAFF', staffId?: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      role,
+      staffId: staffId || null,
+      exp: Date.now() + 12 * 60 * 60 * 1000,
+    })
+  ).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifyPortalToken(
+  req: Request,
+  requiredRole?: 'OWNER' | 'STAFF'
+): { role: 'OWNER' | 'STAFF'; staffId: string | null } | null {
+  const authHeader = String(req.headers.authorization || '');
+  if (!authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice(7).trim();
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  if (!constantTimeMatch(sig, expectedSig)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8')) as {
+      role?: 'OWNER' | 'STAFF';
+      staffId?: string | null;
+      exp?: number;
+    };
+    if (!parsed.exp || parsed.exp < Date.now()) return null;
+    if (requiredRole && parsed.role !== requiredRole) return null;
+    if (parsed.role !== 'OWNER' && parsed.role !== 'STAFF') return null;
+    return { role: parsed.role, staffId: parsed.staffId || null };
+  } catch {
+    return null;
+  }
+}
+
+function requireOwnerAuth(req: Request, res: Response): boolean {
+  const session = verifyPortalToken(req, 'OWNER');
+  if (!session) {
+    res.status(401).json({ error: 'Owner login required. Kripya Malik portal me dobara login karein.' });
+    return false;
+  }
+  return true;
+}
+
+const failedPinAttempts = new Map<string, { count: number; lockedUntil: number }>();
 
 interface OtpRecord {
   code: string;
@@ -552,8 +618,13 @@ async function startServer() {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   }
   const app = express();
+  app.set('trust proxy', true);
   app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin;
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Vary', 'Origin');
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') {
@@ -906,11 +977,13 @@ async function startServer() {
     res.json({ staff: member, settings: db.settings });
   });
 
-  // 2. Staff Management: Add, Edit, Deactivate/Reactivate Staff (preserving all history)
+  // 2. Staff Management: Add, Edit, Delete/Deactivate Staff (Owner protected)
   app.post('/api/staff', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
     const { name, phone, specialty, commission_pct, is_owner } = req.body;
-    if (!name || !phone) {
-      res.status(400).json({ error: 'Staff name and phone number are required.' });
+    const cleanPhone = normalizePhone10(phone);
+    if (!name || cleanPhone.length !== 10) {
+      res.status(400).json({ error: 'Staff name and 10-digit mobile number are required.' });
       return;
     }
 
@@ -919,10 +992,10 @@ async function startServer() {
       id: crypto.randomUUID(),
       salon_id: db.salon.id,
       name: String(name).trim(),
-      phone: String(phone).trim(),
+      phone: cleanPhone,
       specialty: String(specialty || 'Senior Barber').trim(),
       is_owner: Boolean(is_owner),
-      commission_pct: Number(commission_pct ?? 40),
+      commission_pct: Math.min(100, Math.max(0, Number(commission_pct ?? 40))),
       availability_status: 'Available',
       is_active: true,
       joined_date: getTodayDateString(),
@@ -938,6 +1011,7 @@ async function startServer() {
   });
 
   app.put('/api/staff/:id', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
     const { id } = req.params;
     const member = db.staff.find((s) => s.id === id);
     if (!member) {
@@ -946,8 +1020,20 @@ async function startServer() {
     }
 
     const { name, phone, specialty, commission_pct, is_active, availability_status } = req.body;
-    if (name !== undefined) member.name = String(name).trim();
-    if (phone !== undefined) member.phone = String(phone).trim();
+    if (name !== undefined && String(name).trim()) member.name = String(name).trim();
+    if (phone !== undefined) {
+      const cleanPhone = normalizePhone10(phone);
+      if (cleanPhone.length !== 10) {
+        res.status(400).json({ error: 'Valid 10-digit mobile number is required.' });
+        return;
+      }
+      member.phone = cleanPhone;
+      if (member.is_owner) {
+        db.salon.phone = cleanPhone;
+        db.salon.updated_at = new Date().toISOString();
+        await syncTableRowToSupabase('salons', db.salon as unknown as Record<string, unknown>);
+      }
+    }
     if (specialty !== undefined) member.specialty = String(specialty).trim();
     if (commission_pct !== undefined) {
       const pct = Number(commission_pct);
@@ -976,6 +1062,44 @@ async function startServer() {
     await syncTableRowToSupabase('staff', member as unknown as Record<string, unknown>);
     broadcastRealtimeUpdate('STAFF_UPDATED');
     res.json({ staff: member });
+  });
+
+  app.delete('/api/staff/:id', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
+    const { id } = req.params;
+    const idx = db.staff.findIndex((s) => s.id === id);
+    if (idx === -1) {
+      res.status(404).json({ error: 'Staff member not found.' });
+      return;
+    }
+    const member = db.staff[idx];
+    if (member.is_owner) {
+      res.status(400).json({ error: 'Salon Owner ko delete nahi kiya ja sakta.' });
+      return;
+    }
+    const hasHistory =
+      db.bookings.some((b) => b.barber_id === id) ||
+      db.commissions.some((c) => c.staff_id === id);
+    if (hasHistory) {
+      member.is_active = false;
+      member.updated_at = new Date().toISOString();
+      saveDatabase();
+      await syncTableRowToSupabase('staff', member as unknown as Record<string, unknown>);
+      broadcastRealtimeUpdate('STAFF_UPDATED');
+      res.json({ deactivated: true, message: 'Staff history safe rakhne ke liye deactivate kar diya gaya.' });
+      return;
+    }
+    db.staff.splice(idx, 1);
+    saveDatabase();
+    if (supabaseAdmin) {
+      try {
+        await supabaseAdmin.from('staff').delete().eq('id', id);
+      } catch {
+        // Ignore if linked
+      }
+    }
+    broadcastRealtimeUpdate('STAFF_UPDATED');
+    res.json({ deleted: true });
   });
 
   // 3. Attendance Management
@@ -1012,8 +1136,9 @@ async function startServer() {
     res.json({ attendance: record });
   });
 
-  // 4. Services Management: Add, Edit, Deactivate Services
+  // 4. Services Management: Add, Edit, Deactivate Services (Owner protected)
   app.post('/api/services', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
     const { name, name_hi, category, price, duration_minutes } = req.body;
     if (!name || price === undefined || Number(price) < 0) {
       res.status(400).json({ error: 'Valid service name and price are required.' });
@@ -1040,6 +1165,7 @@ async function startServer() {
   });
 
   app.put('/api/services/:id', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
     const { id } = req.params;
     const service = db.services.find((s) => s.id === id);
     if (!service) {
@@ -1062,6 +1188,7 @@ async function startServer() {
   });
 
   app.delete('/api/services/:id', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
     const { id } = req.params;
     const idx = db.services.findIndex((s) => s.id === id);
     if (idx === -1) {
@@ -1091,29 +1218,131 @@ async function startServer() {
     res.json({ deleted: true });
   });
 
-  // 4A. Portal PIN Security (Separate Owner & Staff Login Access)
+  // 4A. Portal Phone + PIN Security (Registered Mobile Number + Secret PIN + Brute-Force Lockout)
   app.post('/api/auth/verify-pin', (req: Request, res: Response) => {
     const role = req.body?.role === 'STAFF' ? 'STAFF' : 'OWNER';
     const pin = String(req.body?.pin || '').trim();
-    const expected = role === 'OWNER'
-      ? db.securityPins?.ownerPin || '1234'
-      : db.securityPins?.staffPin || '0000';
-    if (pin !== expected) {
-      res.status(401).json({ verified: false, error: `Invalid ${role} PIN. Please try again.` });
+    const cleanPhone = normalizePhone10(req.body?.phone);
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const lockKey = `${clientIp}:${role}`;
+    const now = Date.now();
+
+    const attemptState = failedPinAttempts.get(lockKey);
+    if (attemptState && attemptState.lockedUntil > now) {
+      const waitMins = Math.max(1, Math.ceil((attemptState.lockedUntil - now) / 60000));
+      res.status(429).json({
+        verified: false,
+        error: `Bahut baar galat koshish hui. ${waitMins} minute baad try karein.`,
+      });
       return;
     }
-    res.json({ verified: true, role });
+
+    if (cleanPhone.length !== 10 || !/^\d{4,6}$/.test(pin)) {
+      res.status(400).json({
+        verified: false,
+        error: '10-digit registered mobile number aur 4-digit PIN zaroori hai.',
+      });
+      return;
+    }
+
+    const expectedOwnerPin = db.securityPins?.ownerPin || '1234';
+    const expectedStaffPin = db.securityPins?.staffPin || '0000';
+
+    if (role === 'OWNER') {
+      const ownerPhones = new Set<string>();
+      const salonPhone10 = normalizePhone10(db.salon.phone);
+      if (salonPhone10.length === 10) ownerPhones.add(salonPhone10);
+      db.staff.forEach((s) => {
+        if (s.is_active && s.is_owner) {
+          const p = normalizePhone10(s.phone);
+          if (p.length === 10) ownerPhones.add(p);
+        }
+      });
+
+      const phoneOk = ownerPhones.has(cleanPhone);
+      const pinOk = constantTimeMatch(pin, expectedOwnerPin);
+      if (!phoneOk || !pinOk) {
+        const prev = attemptState && attemptState.lockedUntil <= now ? attemptState.count : 0;
+        const nextCount = prev + 1;
+        failedPinAttempts.set(lockKey, {
+          count: nextCount >= 5 ? 0 : nextCount,
+          lockedUntil: nextCount >= 5 ? now + 5 * 60 * 1000 : 0,
+        });
+        res.status(401).json({
+          verified: false,
+          error: 'Registered Owner mobile number ya PIN galat hai.',
+        });
+        return;
+      }
+
+      failedPinAttempts.delete(lockKey);
+      const token = signPortalToken('OWNER');
+      res.json({ verified: true, role: 'OWNER', token });
+      return;
+    }
+
+    const matchedStaff = db.staff.find(
+      (s) => s.is_active && normalizePhone10(s.phone) === cleanPhone
+    );
+    const pinOk = constantTimeMatch(pin, expectedStaffPin);
+    if (!matchedStaff || !pinOk) {
+      const prev = attemptState && attemptState.lockedUntil <= now ? attemptState.count : 0;
+      const nextCount = prev + 1;
+      failedPinAttempts.set(lockKey, {
+        count: nextCount >= 5 ? 0 : nextCount,
+        lockedUntil: nextCount >= 5 ? now + 5 * 60 * 1000 : 0,
+      });
+      res.status(401).json({
+        verified: false,
+        error: 'Registered Staff mobile number ya PIN galat hai.',
+      });
+      return;
+    }
+
+    failedPinAttempts.delete(lockKey);
+    const token = signPortalToken('STAFF', matchedStaff.id);
+    res.json({
+      verified: true,
+      role: 'STAFF',
+      staffId: matchedStaff.id,
+      staffName: matchedStaff.name,
+      token,
+    });
   });
 
   app.put('/api/auth/pins', (req: Request, res: Response) => {
-    const { new_owner_pin, new_staff_pin } = req.body;
+    if (!requireOwnerAuth(req, res)) return;
+    const rawOwnerPin = req.body?.ownerPin ?? req.body?.new_owner_pin;
+    const rawStaffPin = req.body?.staffPin ?? req.body?.new_staff_pin;
+
     if (!db.securityPins) db.securityPins = { ownerPin: '1234', staffPin: '0000' };
-    if (new_owner_pin !== undefined && String(new_owner_pin).trim().length >= 4) {
-      db.securityPins.ownerPin = String(new_owner_pin).trim();
+    let updatedAny = false;
+
+    if (rawOwnerPin !== undefined && String(rawOwnerPin).trim() !== '') {
+      const cleanOwner = String(rawOwnerPin).trim();
+      if (!/^\d{4,6}$/.test(cleanOwner)) {
+        res.status(400).json({ error: 'Owner PIN 4 se 6 digits ka number hona chahiye.' });
+        return;
+      }
+      db.securityPins.ownerPin = cleanOwner;
+      updatedAny = true;
     }
-    if (new_staff_pin !== undefined && String(new_staff_pin).trim().length >= 4) {
-      db.securityPins.staffPin = String(new_staff_pin).trim();
+
+    if (rawStaffPin !== undefined && String(rawStaffPin).trim() !== '') {
+      const cleanStaff = String(rawStaffPin).trim();
+      if (!/^\d{4,6}$/.test(cleanStaff)) {
+        res.status(400).json({ error: 'Staff PIN 4 se 6 digits ka number hona chahiye.' });
+        return;
+      }
+      db.securityPins.staffPin = cleanStaff;
+      updatedAny = true;
     }
+
+    if (!updatedAny) {
+      res.status(400).json({ error: 'Kam se kam ek valid 4-digit PIN daalein.' });
+      return;
+    }
+
     saveDatabase();
     res.json({ updated: true });
   });
@@ -2010,7 +2239,7 @@ async function startServer() {
     res.status(201).json({ payment, customer, dueEntry });
   });
 
-  // 9. Customer Record Management (Edit Customer Details & Haircut Preferences)
+  // 9. Customer Record Management (Edit & Safe Delete)
   app.put('/api/customers/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     const customer = db.customers.find((c) => c.id === id);
@@ -2020,7 +2249,7 @@ async function startServer() {
     }
     const { name, phone, haircut_preference, special_notes } = req.body;
     if (name !== undefined) customer.name = String(name).trim();
-    if (phone !== undefined) customer.phone = String(phone).replace(/\D/g, '').slice(-10);
+    if (phone !== undefined) customer.phone = normalizePhone10(phone);
     if (haircut_preference !== undefined) customer.haircut_preference = String(haircut_preference).trim();
     if (special_notes !== undefined) customer.special_notes = String(special_notes).trim();
     customer.updated_at = new Date().toISOString();
@@ -2029,6 +2258,34 @@ async function startServer() {
     await syncTableRowToSupabase('customers', customer as unknown as Record<string, unknown>);
     broadcastRealtimeUpdate('CUSTOMER_UPDATED');
     res.json({ customer });
+  });
+
+  app.delete('/api/customers/:id', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
+    const { id } = req.params;
+    const idx = db.customers.findIndex((c) => c.id === id);
+    if (idx === -1) {
+      res.status(404).json({ error: 'Customer not found.' });
+      return;
+    }
+    const hasActiveBooking = db.bookings.some(
+      (b) => b.customer_id === id && (b.status === 'WAITING' || b.status === 'IN_PROGRESS')
+    );
+    if (hasActiveBooking) {
+      res.status(400).json({ error: 'Is customer ki active booking chal rahi hai, pehle complete ya cancel karein.' });
+      return;
+    }
+    db.customers.splice(idx, 1);
+    saveDatabase();
+    if (supabaseAdmin) {
+      try {
+        await supabaseAdmin.from('customers').delete().eq('id', id);
+      } catch {
+        // Ignore if linked
+      }
+    }
+    broadcastRealtimeUpdate('CUSTOMER_UPDATED');
+    res.json({ deleted: true });
   });
 
   // 10. Expenses Management
@@ -2057,6 +2314,7 @@ async function startServer() {
   });
 
   app.delete('/api/expenses/:id', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
     const { id } = req.params;
     const idx = db.expenses.findIndex((e) => e.id === id);
     if (idx === -1) {
@@ -2076,8 +2334,9 @@ async function startServer() {
     res.json({ deleted: true });
   });
 
-  // 11. Salon Settings & Time Slots Management
+  // 11. Salon Settings & Time Slots Management (Owner protected)
   app.put('/api/settings', async (req: Request, res: Response) => {
+    if (!requireOwnerAuth(req, res)) return;
     const {
       salon_name,
       salon_phone,
@@ -2088,12 +2347,31 @@ async function startServer() {
       weekly_holidays,
       upi_id,
       upi_merchant_name,
+      hide_staff_login,
+      customer_apk_url,
       regenerate_slots,
     } = req.body;
 
     const now = new Date().toISOString();
-    if (salon_name !== undefined) db.salon.name = String(salon_name).trim();
-    if (salon_phone !== undefined) db.salon.phone = String(salon_phone).trim();
+    const oldSalonPhone10 = normalizePhone10(db.salon.phone);
+
+    if (salon_name !== undefined && String(salon_name).trim()) {
+      db.salon.name = String(salon_name).trim();
+    }
+    if (salon_phone !== undefined) {
+      const cleanPhone = normalizePhone10(salon_phone);
+      if (cleanPhone.length === 10) {
+        db.salon.phone = cleanPhone;
+        const ownerStaff = db.staff.find(
+          (s) => s.is_owner && normalizePhone10(s.phone) === oldSalonPhone10
+        );
+        if (ownerStaff) {
+          ownerStaff.phone = cleanPhone;
+          ownerStaff.updated_at = now;
+          await syncTableRowToSupabase('staff', ownerStaff as unknown as Record<string, unknown>);
+        }
+      }
+    }
     if (salon_address !== undefined) db.salon.address = String(salon_address).trim();
     db.salon.updated_at = now;
 
@@ -2104,6 +2382,17 @@ async function startServer() {
     if (upi_id !== undefined) db.settings.upi_id = String(upi_id).trim();
     if (upi_merchant_name !== undefined) {
       db.settings.upi_merchant_name = String(upi_merchant_name).trim() || db.salon.name;
+    }
+    if (hide_staff_login !== undefined) {
+      db.settings.hide_staff_login = Boolean(hide_staff_login);
+    }
+    if (customer_apk_url !== undefined) {
+      const cleanApkUrl = String(customer_apk_url).trim();
+      if (cleanApkUrl && !/^https?:\/\//i.test(cleanApkUrl)) {
+        res.status(400).json({ error: 'APK/App URL http:// ya https:// se shuru hona chahiye.' });
+        return;
+      }
+      db.settings.customer_apk_url = cleanApkUrl;
     }
     db.settings.updated_at = now;
 

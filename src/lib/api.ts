@@ -3,6 +3,16 @@ import { handleLocalApiRequest } from './localApiEngine';
 const API_BASE_KEY = 'sb_api_base_url';
 const LOCAL_MODE_KEY = 'sb_local_mode';
 
+let inMemoryAuthToken: string | null = null;
+
+export function setAuthToken(token: string | null): void {
+  inMemoryAuthToken = token && token.trim() ? token.trim() : null;
+}
+
+export function getAuthToken(): string | null {
+  return inMemoryAuthToken;
+}
+
 export function normalizeBaseUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, '');
   if (!trimmed) return '';
@@ -63,8 +73,14 @@ export async function apiFetch(
   path: string,
   init?: RequestInit & { timeoutMs?: number }
 ): Promise<Response> {
+  const mergedHeaders = new Headers(init?.headers || {});
+  if (inMemoryAuthToken && !mergedHeaders.has('Authorization')) {
+    mergedHeaders.set('Authorization', `Bearer ${inMemoryAuthToken}`);
+  }
+  const nextInit = { ...init, headers: mergedHeaders };
+
   if (isPhoneOfflineMode() && path.startsWith('/api/')) {
-    return handleLocalApiRequest(path, init);
+    return handleLocalApiRequest(path, nextInit);
   }
 
   const targetUrl = apiUrl(path);
@@ -73,7 +89,7 @@ export async function apiFetch(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const { timeoutMs: _t, ...fetchInit } = init || {};
+    const { timeoutMs: _t, ...fetchInit } = nextInit;
     const res = await fetch(targetUrl, {
       ...fetchInit,
       signal: init?.signal || controller.signal,

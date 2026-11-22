@@ -4,6 +4,7 @@ import {
   Check,
   History,
   LogIn,
+  LogOut,
   Play,
   Search,
   User,
@@ -27,16 +28,20 @@ export type StaffTab = 'AAJ' | 'HISTORY' | 'KAMAI' | 'PROFILE';
 
 interface StaffPortalViewProps {
   data: SalonBootstrapData;
+  lockedStaffId?: string;
   onRefresh: () => Promise<void>;
   notify: (type: 'success' | 'error', message: string) => void;
   onOpenLogin: () => void;
+  onLogout?: () => void;
 }
 
 export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
   data,
+  lockedStaffId,
   onRefresh,
   notify,
   onOpenLogin,
+  onLogout,
 }) => {
   const [activeTab, setActiveTab] = useState<StaffTab>('AAJ');
   const todayStr = getLocalTodayStr();
@@ -47,12 +52,19 @@ export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
   );
 
   const [selectedStaffId, setSelectedStaffId] = useState<string>(
-    () => staffList.find((s) => !s.is_owner)?.id || staffList[0]?.id || ''
+    () => lockedStaffId || staffList.find((s) => !s.is_owner)?.id || staffList[0]?.id || ''
   );
 
+  useEffect(() => {
+    if (lockedStaffId) {
+      setSelectedStaffId(lockedStaffId);
+    }
+  }, [lockedStaffId]);
+
+  const effectiveStaffId = lockedStaffId || selectedStaffId;
   const currentStaffIndex = Math.max(
     0,
-    staffList.findIndex((s) => s.id === selectedStaffId)
+    staffList.findIndex((s) => s.id === effectiveStaffId)
   );
   const currentStaff = staffList[currentStaffIndex] || staffList[0];
 
@@ -279,17 +291,23 @@ export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
             ))}
           </nav>
 
-          <select
-            value={currentStaff.id}
-            onChange={(e) => setSelectedStaffId(e.target.value)}
-            className="px-3 py-1.5 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[11px] font-bold text-[#141028] dark:text-white shadow-sm focus:outline-none"
-          >
-            {staffList.map((st, idx) => (
-              <option key={st.id} value={st.id}>
-                {st.name.split(' ')[0]} · Chair {idx + 1}
-              </option>
-            ))}
-          </select>
+          {lockedStaffId ? (
+            <span className="px-3 py-1.5 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[11px] font-bold text-[#141028] dark:text-white shadow-sm">
+              {currentStaff.name.split(' ')[0]} · Chair {currentStaffIndex + 1}
+            </span>
+          ) : (
+            <select
+              value={currentStaff.id}
+              onChange={(e) => setSelectedStaffId(e.target.value)}
+              className="px-3 py-1.5 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[11px] font-bold text-[#141028] dark:text-white shadow-sm focus:outline-none"
+            >
+              {staffList.map((st, idx) => (
+                <option key={st.id} value={st.id}>
+                  {st.name.split(' ')[0]} · Chair {idx + 1}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       </header>
 
@@ -735,6 +753,17 @@ export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
               <LogIn className="w-4 h-4" />
               <span>Login / Role Badlein</span>
             </button>
+
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                className="w-full py-3 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 font-extrabold text-sm flex items-center justify-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Logout (Lock Staff Portal)</span>
+              </button>
+            )}
           </div>
         )}
       </main>

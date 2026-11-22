@@ -39,6 +39,8 @@ export interface SalonSettings {
   currency_symbol: string;
   upi_id?: string;
   upi_merchant_name?: string;
+  hide_staff_login?: boolean;
+  customer_apk_url?: string;
   updated_at: string;
 }
 

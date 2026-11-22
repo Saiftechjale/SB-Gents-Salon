@@ -6,6 +6,7 @@ import {
   Check,
   LayoutGrid,
   LogIn,
+  LogOut,
   MessageCircle,
   Play,
   Receipt,
@@ -42,6 +43,7 @@ interface ReceptionPortalViewProps {
   notify: (type: 'success' | 'error', message: string) => void;
   onSwitchRole: (role: AppPortalRole) => void;
   onOpenLogin: () => void;
+  onLogout?: () => void;
 }
 
 export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
@@ -52,6 +54,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
   notify,
   onSwitchRole,
   onOpenLogin,
+  onLogout,
 }) => {
   const [activeTab, setActiveTab] = useState<ReceptionTab>('AAJ');
   const todayStr = getLocalTodayStr();
@@ -1033,9 +1036,27 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                   <div className="text-sm font-extrabold text-[#141028] dark:text-white">
                     Login Screen
                   </div>
-                  <div className="text-xs text-slate-500">Role badlein ya Logout karein</div>
+                  <div className="text-xs text-slate-500">Role badlein</div>
                 </div>
               </button>
+
+              {onLogout && (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="sb-card p-4 text-left flex items-center gap-3 border-rose-200 dark:border-rose-900 hover:border-rose-400"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center">
+                    <LogOut className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-extrabold text-rose-600 dark:text-rose-400">
+                      Logout
+                    </div>
+                    <div className="text-xs text-slate-500">Customer mode me lock karein</div>
+                  </div>
+                </button>
+              )}
             </div>
           </div>
         )}

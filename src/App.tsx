@@ -7,6 +7,7 @@ import {
   apiFetch,
   apiUrl,
   isPhoneOfflineMode,
+  setAuthToken,
   setPhoneOfflineMode,
 } from './lib/api';
 import { supabase } from './lib/supabase';
@@ -46,12 +47,9 @@ export default function App() {
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
 
-  const [ownerUnlocked, setOwnerUnlocked] = useState<boolean>(
-    () => typeof sessionStorage !== 'undefined' && sessionStorage.getItem('sb_owner_auth') === '1'
-  );
-  const [staffUnlocked, setStaffUnlocked] = useState<boolean>(
-    () => typeof sessionStorage !== 'undefined' && sessionStorage.getItem('sb_staff_auth') === '1'
-  );
+  const [ownerUnlocked, setOwnerUnlocked] = useState<boolean>(false);
+  const [staffUnlocked, setStaffUnlocked] = useState<boolean>(false);
+  const [loggedInStaffId, setLoggedInStaffId] = useState<string | undefined>(undefined);
 
   const [data, setData] = useState<SalonBootstrapData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -242,7 +240,7 @@ export default function App() {
       setShowLoginScreen(true);
       return;
     }
-    if (targetRole === 'STAFF' && !staffUnlocked) {
+    if (targetRole === 'STAFF' && !staffUnlocked && !ownerUnlocked) {
       setRole(targetRole);
       setShowLoginScreen(true);
       return;
@@ -250,10 +248,20 @@ export default function App() {
     setRole(targetRole);
   };
 
+  const handleLogout = useCallback(() => {
+    setAuthToken(null);
+    setOwnerUnlocked(false);
+    setStaffUnlocked(false);
+    setLoggedInStaffId(undefined);
+    setRole('CUSTOMER');
+    setShowLoginScreen(false);
+    notify('success', 'Logged out — Customer mode active');
+  }, [notify]);
+
   const needsAuthGate =
     showLoginScreen ||
     ((role === 'MALIK' || role === 'RECEPTION') && !ownerUnlocked) ||
-    (role === 'STAFF' && !staffUnlocked);
+    (role === 'STAFF' && !staffUnlocked && !ownerUnlocked);
 
   return (
     <div className="min-h-screen bg-[#F8F7FC] dark:bg-slate-950 text-[#141028] dark:text-slate-100">
@@ -290,6 +298,7 @@ export default function App() {
       ) : needsAuthGate ? (
         <LoginScreen
           salonName={data.salon.name}
+          hideAdminRoles={Boolean(data.settings.hide_staff_login)}
           initialRole={role}
           initialPhone={loginPhone}
           onClose={
@@ -299,12 +308,20 @@ export default function App() {
                 }
               : undefined
           }
-          onSuccess={(selectedRole, enteredPhone) => {
+          onSuccess={(selectedRole, enteredPhone, matchedStaffId, token) => {
             if (enteredPhone) setLoginPhone(enteredPhone);
+            if (token) setAuthToken(token);
             if (selectedRole === 'MALIK' || selectedRole === 'RECEPTION') {
               setOwnerUnlocked(true);
+              setLoggedInStaffId(undefined);
             } else if (selectedRole === 'STAFF') {
               setStaffUnlocked(true);
+              setLoggedInStaffId(matchedStaffId);
+            } else {
+              setAuthToken(null);
+              setOwnerUnlocked(false);
+              setStaffUnlocked(false);
+              setLoggedInStaffId(undefined);
             }
             setRole(selectedRole);
             setShowLoginScreen(false);
@@ -332,13 +349,16 @@ export default function App() {
           notify={notify}
           onSwitchRole={handleSwitchRole}
           onOpenLogin={() => setShowLoginScreen(true)}
+          onLogout={handleLogout}
         />
       ) : role === 'STAFF' ? (
         <StaffPortalView
           data={data}
+          lockedStaffId={ownerUnlocked ? undefined : loggedInStaffId}
           onRefresh={fetchBootstrapData}
           notify={notify}
           onOpenLogin={() => setShowLoginScreen(true)}
+          onLogout={handleLogout}
         />
       ) : (
         <MalikPortalView
@@ -347,6 +367,7 @@ export default function App() {
           notify={notify}
           onSwitchRole={handleSwitchRole}
           onOpenLogin={() => setShowLoginScreen(true)}
+          onLogout={handleLogout}
           onServerUrlUpdated={async () => {
             setPhoneOfflineModeState(isPhoneOfflineMode());
             await fetchBootstrapData();
