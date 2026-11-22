@@ -69,7 +69,7 @@ export function createDefaultLocalSalonState(): SalonBootstrapData {
     {
       id: '22222222-2222-4222-8222-222222222201',
       salon_id: salonId,
-      name: 'Saif Bhai (Owner)',
+      name: 'Saif Bhai',
       phone: '9876543210',
       specialty: 'Master Stylist & Salon Owner',
       is_owner: true,

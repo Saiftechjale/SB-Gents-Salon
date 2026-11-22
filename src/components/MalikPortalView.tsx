@@ -12,7 +12,7 @@ import {
   Wifi,
 } from 'lucide-react';
 import type { SalonBootstrapData } from '../types/salon';
-import { apiFetch } from '../lib/api';
+import { apiFetch, getApiBaseUrl, setApiBaseUrl, setPhoneOfflineMode } from '../lib/api';
 import { exportReportToExcel, exportReportToPDF } from '../lib/exportReports';
 import {
   getAvatarColorClass,
@@ -29,7 +29,7 @@ interface MalikPortalViewProps {
   notify: (type: 'success' | 'error', message: string) => void;
   onSwitchRole: (role: AppPortalRole) => void;
   onOpenLogin: () => void;
-  onSwitchServerConfig?: () => void;
+  onServerUrlUpdated?: () => Promise<void>;
 }
 
 export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
@@ -38,7 +38,7 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   notify,
   onSwitchRole,
   onOpenLogin,
-  onSwitchServerConfig,
+  onServerUrlUpdated,
 }) => {
   const [activeTab, setActiveTab] = useState<MalikTab>('KAMAI');
   const [commPeriod, setCommPeriod] = useState<'TODAY' | 'WEEK' | 'MONTH'>('TODAY');
@@ -176,6 +176,7 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   const [newExpAmt, setNewExpAmt] = useState('');
   const [ownerPin, setOwnerPin] = useState('');
   const [staffPin, setStaffPin] = useState('');
+  const [serverUrlDraft, setServerUrlDraft] = useState(() => getApiBaseUrl());
 
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -795,7 +796,7 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                   type="text"
                   value={upiId}
                   onChange={(e) => setUpiId(e.target.value)}
-                  placeholder="Shop UPI ID (e.g. name@okaxis)"
+                  placeholder="Shop UPI ID"
                   className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold"
                 />
                 <input
@@ -874,14 +875,14 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
             {/* Expenses Quick Entry */}
             <form onSubmit={handleAddExpense} className="sb-card p-4 space-y-2.5">
               <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                Aaj ka Kharch (Expenses)
+                Aaj ka Kharch
               </div>
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={newExpTitle}
                   onChange={(e) => setNewExpTitle(e.target.value)}
-                  placeholder="Kharch (Chai, Blade, Cream)"
+                  placeholder="Kharch item"
                   className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                 />
                 <input
@@ -931,15 +932,38 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
               </button>
             </form>
 
-            {onSwitchServerConfig && (
-              <button
-                type="button"
-                onClick={onSwitchServerConfig}
-                className="w-full py-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-bold text-[#6C3BF5] flex items-center justify-center gap-2"
+            {onServerUrlUpdated && (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  const clean = serverUrlDraft.trim();
+                  setApiBaseUrl(clean);
+                  setPhoneOfflineMode(!clean);
+                  await onServerUrlUpdated();
+                  notify('success', clean ? 'Live server URL updated!' : 'Phone storage mode active');
+                }}
+                className="sb-card p-4 space-y-2.5"
               >
-                <Wifi className="w-4 h-4" />
-                <span>Live Server URL Connect / Change karein</span>
-              </button>
+                <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <Wifi className="w-3.5 h-3.5 text-[#6C3BF5]" />
+                  <span>Live Server Sync</span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={serverUrlDraft}
+                    onChange={(e) => setServerUrlDraft(e.target.value)}
+                    placeholder="https://your-salon-server.com"
+                    className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  />
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold"
+                  >
+                    Save
+                  </button>
+                </div>
+              </form>
             )}
 
             <button

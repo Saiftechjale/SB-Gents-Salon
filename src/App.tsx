@@ -1,14 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, WifiOff, X } from 'lucide-react';
+import { CheckCircle2, X } from 'lucide-react';
 import type { OfflineDraftBill, SalonBootstrapData } from './types/salon';
 import { Language } from './lib/i18n';
 import { playAlertChime, sendNativeNotification } from './lib/alerts';
 import {
   apiFetch,
   apiUrl,
-  getApiBaseUrl,
   isPhoneOfflineMode,
-  setApiBaseUrl,
   setPhoneOfflineMode,
 } from './lib/api';
 import { supabase } from './lib/supabase';
@@ -57,8 +55,6 @@ export default function App() {
 
   const [data, setData] = useState<SalonBootstrapData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [connectionError, setConnectionError] = useState<string>('');
-  const [serverUrlInput, setServerUrlInput] = useState<string>(() => getApiBaseUrl());
   const [phoneOfflineMode, setPhoneOfflineModeState] = useState<boolean>(() => isPhoneOfflineMode());
   const [, setOfflineDrafts] = useState<OfflineDraftBill[]>([]);
 
@@ -100,17 +96,21 @@ export default function App() {
       if (!res.ok) throw new Error('Failed to load salon database');
       const json = (await res.json()) as SalonBootstrapData;
       setData(json);
-      setConnectionError('');
       await cacheSalonStateLocally(json);
-    } catch (err) {
+    } catch {
       const cached = await getCachedSalonState();
       if (cached) {
         setData(cached);
-        setConnectionError('');
+        setPhoneOfflineMode(true);
+        setPhoneOfflineModeState(true);
       } else {
-        setConnectionError(
-          err instanceof Error ? err.message : 'Unable to connect to Salon Server'
-        );
+        setPhoneOfflineMode(true);
+        setPhoneOfflineModeState(true);
+        const localRes = await apiFetch('/api/bootstrap');
+        if (localRes.ok) {
+          const localJson = (await localRes.json()) as SalonBootstrapData;
+          setData(localJson);
+        }
       }
     } finally {
       setLoading(false);
@@ -278,97 +278,15 @@ export default function App() {
         </div>
       )}
 
-      {loading ? (
+      {loading || !data ? (
         <div className="min-h-screen flex items-center justify-center p-10">
           <div className="text-center space-y-3">
             <div className="w-10 h-10 rounded-full border-3 border-[#6C3BF5] border-t-transparent animate-spin mx-auto" />
             <div className="text-sm font-bold text-slate-500">
-              लोड हो रहा है... (Loading Salon...)
+              Loading...
             </div>
           </div>
         </div>
-      ) : !data ? (
-        <main className="min-h-screen flex items-center justify-center p-4">
-          <div className="w-full max-w-md sb-card p-6 space-y-5">
-            <div className="space-y-1.5 text-center">
-              <div className="w-12 h-12 rounded-2xl sb-gradient flex items-center justify-center text-white mx-auto shadow-lg shadow-purple-500/20">
-                <WifiOff className="w-6 h-6" />
-              </div>
-              <h2 className="text-xl font-extrabold text-[#141028] dark:text-white">
-                सर्वर से कनेक्ट नहीं हुआ
-              </h2>
-              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                इस APK के अंदर लाइव सर्वर लिंक नहीं जुड़ा है। लाइव बुकिंग के लिए नीचे अपना{' '}
-                <b>Website / Server Link</b> डालें, या अभी फोन में <b>Offline Mode</b> खोलें।
-              </p>
-              {connectionError && (
-                <p className="text-[11px] font-mono text-rose-500 break-words">
-                  {connectionError}
-                </p>
-              )}
-            </div>
-
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                setPhoneOfflineMode(false);
-                setPhoneOfflineModeState(false);
-                setApiBaseUrl(serverUrlInput);
-                setLoading(true);
-                await fetchBootstrapData();
-              }}
-              className="space-y-2.5"
-            >
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                Live Website / Server URL (Optional)
-              </label>
-              <input
-                type="url"
-                value={serverUrlInput}
-                onChange={(e) => setServerUrlInput(e.target.value)}
-                placeholder="https://your-salon-server.com"
-                className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3.5 py-3 text-sm"
-              />
-              <button
-                type="submit"
-                className="w-full py-3 rounded-xl bg-[#141028] text-white font-bold text-sm hover:opacity-90"
-              >
-                लाइव सर्वर से जोड़ें (Connect Server)
-              </button>
-            </form>
-
-            <div className="relative flex py-1 items-center">
-              <div className="flex-grow border-t border-slate-200 dark:border-slate-800" />
-              <span className="shrink mx-3 text-[11px] font-bold text-slate-400">या / OR</span>
-              <div className="flex-grow border-t border-slate-200 dark:border-slate-800" />
-            </div>
-
-            <div className="space-y-2.5">
-              <button
-                type="button"
-                onClick={async () => {
-                  setPhoneOfflineMode(true);
-                  setPhoneOfflineModeState(true);
-                  setLoading(true);
-                  await fetchBootstrapData();
-                }}
-                className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm shadow-lg shadow-purple-500/20"
-              >
-                अभी फोन में ऐप खोलें (Offline Phone Mode)
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  setLoading(true);
-                  await fetchBootstrapData();
-                }}
-                className="w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300"
-              >
-                दोबारा कोशिश करें (Retry)
-              </button>
-            </div>
-          </div>
-        </main>
       ) : needsAuthGate ? (
         <LoginScreen
           salonName={data.salon.name}
@@ -429,11 +347,9 @@ export default function App() {
           notify={notify}
           onSwitchRole={handleSwitchRole}
           onOpenLogin={() => setShowLoginScreen(true)}
-          onSwitchServerConfig={() => {
-            setPhoneOfflineMode(false);
-            setPhoneOfflineModeState(false);
-            setData(null);
-            setLoading(false);
+          onServerUrlUpdated={async () => {
+            setPhoneOfflineModeState(isPhoneOfflineMode());
+            await fetchBootstrapData();
           }}
         />
       )}

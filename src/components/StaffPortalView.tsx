@@ -370,7 +370,7 @@ export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
                     className="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
                   >
                     <Check className="w-4 h-4" />
-                    <span>Ho gaya (Done)</span>
+                    <span>Ho gaya</span>
                   </button>
                   <button
                     type="button"
@@ -707,7 +707,7 @@ export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
 
             <div className="sb-card p-4 space-y-3">
               <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                Aaj ki Attendance ({myAttendance?.status || 'Not Marked'})
+                Aaj ki Attendance {myAttendance?.status ? `· ${myAttendance.status}` : ''}
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {(['PRESENT', 'HALF_DAY', 'LEAVE'] as const).map((a) => (

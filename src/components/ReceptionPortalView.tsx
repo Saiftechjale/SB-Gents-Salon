@@ -232,7 +232,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
       }
       await onRefresh();
       setSelectedBookingModal(null);
-      notify('success', status === 'IN_PROGRESS' ? 'ग्राहक शुरू किया गया (Customer notified)' : 'Status updated');
+      notify('success', status === 'IN_PROGRESS' ? 'ग्राहक शुरू किया गया' : 'Status updated');
     } catch (e) {
       notify('error', String(e));
     }
@@ -290,7 +290,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
 
   const handleSaveQuickUpi = async () => {
     if (!isValidUpiId(quickUpiInput)) {
-      notify('error', 'सही UPI ID डालें (जैसे name@okaxis)');
+      notify('error', 'सही UPI ID डालें');
       return;
     }
     const res = await apiFetch('/api/settings', {
@@ -619,7 +619,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                   type="text"
                   value={wName}
                   onChange={(e) => setWName(e.target.value)}
-                  placeholder="Customer ka naam (jaise Imran Q.)"
+                  placeholder="Customer ka naam"
                   className="w-full bg-transparent text-sm font-bold text-[#141028] dark:text-white focus:outline-none"
                 />
               </div>
@@ -849,7 +849,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                           type="text"
                           value={quickUpiInput}
                           onChange={(e) => setQuickUpiInput(e.target.value)}
-                          placeholder="Shop UPI ID (e.g. salon@okaxis)"
+                          placeholder="Shop UPI ID"
                           className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-semibold"
                         />
                         <button
@@ -1082,7 +1082,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                   className="py-3 rounded-2xl bg-[#6C3BF5] text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
                 >
                   <Play className="w-4 h-4" />
-                  <span>शुरू करें (Start)</span>
+                  <span>शुरू करें</span>
                 </button>
               )}
               {selectedBookingModal.status !== 'COMPLETED' && (

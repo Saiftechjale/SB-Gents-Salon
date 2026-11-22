@@ -78,7 +78,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
 
     if (code.length < 4) {
-      setError('कृपया 4 अंकों का PIN डालें (Owner/Reception: 1234, Staff: 0000)');
+      setError('4 अंकों का PIN डालें');
       return;
     }
 
@@ -92,7 +92,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       });
       const json = await res.json();
       if (!res.ok || !json.verified) {
-        setError(json.error || 'गलत PIN — कृपया फिर से जांचें');
+        setError('गलत PIN');
         return;
       }
       if (selectedRole === 'STAFF') {
@@ -161,18 +161,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         </div>
 
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
-              {selectedRole === 'CUSTOMER' ? 'OTP (Optional)' : '4-DIGIT PIN'}
-            </label>
-            <span className="text-[11px] font-medium text-slate-400">
-              {selectedRole === 'CUSTOMER'
-                ? 'Customer direct login'
-                : selectedRole === 'STAFF'
-                ? 'Staff PIN'
-                : 'Owner / Reception PIN'}
-            </span>
-          </div>
+          <label className="block text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+            {selectedRole === 'CUSTOMER' ? 'OTP' : 'PIN'}
+          </label>
           <div className="grid grid-cols-4 gap-3">
             {digits.map((d, idx) => (
               <input
@@ -232,7 +223,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           disabled={submitting}
           className="w-full py-4 rounded-2xl sb-gradient text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 active:scale-[0.99] transition-transform disabled:opacity-60 min-h-[52px]"
         >
-          <span>{submitting ? 'Checking...' : 'Login'}</span>
+          <span>{submitting ? 'Loading...' : 'Login'}</span>
           <ArrowRight className="w-5 h-5" />
         </button>
 

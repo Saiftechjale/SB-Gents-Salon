@@ -93,3 +93,24 @@ export function isSlotInPastForDate(dateStr: string, slotTime: string): boolean 
   const nowMins = now.getHours() * 60 + now.getMinutes();
   return slotMins <= nowMins;
 }
+
+export function cleanDisplayName(name?: string | null): string {
+  return (name || '')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function formatServiceCombo(names: string[]): string {
+  const parts: string[] = [];
+  for (const raw of names) {
+    const pieces = raw.split('+').map((p) => p.trim()).filter(Boolean);
+    for (const piece of pieces) {
+      if (!parts.some((existing) => existing.toLowerCase() === piece.toLowerCase())) {
+        parts.push(piece);
+      }
+    }
+  }
+  return parts.join(' + ');
+}
+

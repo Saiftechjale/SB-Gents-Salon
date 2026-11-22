@@ -204,7 +204,7 @@ function createInitialDatabase(): DatabaseStore {
   const ownerBarber: StaffMember = {
     id: '22222222-2222-4222-8222-222222222201',
     salon_id: salonId,
-    name: 'Saif Bhai (Owner)',
+    name: 'Saif Bhai',
     phone: '9876543210',
     specialty: 'Master Stylist & Salon Owner',
     is_owner: true,
@@ -545,7 +545,9 @@ async function hydrateOrSeedSupabaseOnStartup(): Promise<void> {
 }
 
 async function startServer() {
-  await hydrateOrSeedSupabaseOnStartup();
+  void hydrateOrSeedSupabaseOnStartup().then(() => {
+    broadcastRealtimeUpdate('HYDRATED');
+  });
   if (!fs.existsSync(UPLOADS_DIR)) {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   }
@@ -2197,7 +2199,10 @@ async function startServer() {
   // Vite middleware for development or static serving in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
