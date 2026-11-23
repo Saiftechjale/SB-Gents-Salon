@@ -7,6 +7,7 @@ import {
   Lock,
   LogOut,
   MessageCircle,
+  MessageSquare,
   Pencil,
   Plus,
   QrCode,
@@ -22,6 +23,11 @@ import {
 import type { Customer, SalonBootstrapData, ServiceItem, StaffMember } from '../types/salon';
 import { apiFetch, getApiBaseUrl, setApiBaseUrl, setPhoneOfflineMode } from '../lib/api';
 import { exportReportToExcel, exportReportToPDF } from '../lib/exportReports';
+import {
+  buildCustomerUdharOrGreetingText,
+  buildSmsUrl,
+  buildWhatsAppUrl,
+} from '../lib/messagingTemplates';
 import {
   getAvatarColorClass,
   getLocalTodayStr,
@@ -545,16 +551,15 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     notify('success', 'Security PINs updated!');
   };
 
-  const commissionWaText = encodeURIComponent(
+  const commissionText =
     `${data.salon.name} — Staff Commission (${commPeriod}):\n` +
-      staffCommissions.rows
-        .map(
-          (r) =>
-            `• ${r.staff.name}: ${r.custCount} customers · ₹${r.totalWork} -> ₹${r.totalComm} (${r.staff.commission_pct}%)`
-        )
-        .join('\n') +
-      `\nTotal Commission: ₹${staffCommissions.grandTotal}`
-  );
+    staffCommissions.rows
+      .map(
+        (r) =>
+          `• ${r.staff.name}: ${r.custCount} customers · ₹${r.totalWork} -> ₹${r.totalComm} (${r.staff.commission_pct}%)`
+      )
+      .join('\n') +
+    `\nTotal Commission: ₹${staffCommissions.grandTotal}`;
 
   const exportDailyReport = (type: 'pdf' | 'excel') => {
     const opts = {
@@ -995,15 +1000,24 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
               </span>
             </div>
 
-            <a
-              href={`https://wa.me/?text=${commissionWaText}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full py-4 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 min-h-[52px]"
-            >
-              <MessageCircle className="w-4 h-4" />
-              <span>Staff ko WhatsApp pe bhejo</span>
-            </a>
+            <div className="grid grid-cols-2 gap-2.5">
+              <a
+                href={buildWhatsAppUrl(undefined, commissionText)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="py-4 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 min-h-[52px]"
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span>WhatsApp Report</span>
+              </a>
+              <a
+                href={buildSmsUrl(undefined, commissionText)}
+                className="py-4 rounded-2xl bg-sky-600 text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg shadow-sky-500/20 min-h-[52px]"
+              >
+                <MessageSquare className="w-4 h-4" />
+                <span>SMS Report</span>
+              </a>
+            </div>
           </div>
         )}
 
@@ -1082,6 +1096,35 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
+                          {(() => {
+                            const custMsg = buildCustomerUdharOrGreetingText({
+                              salonName: data.salon.name,
+                              customerName: c.name,
+                              outstandingDue: Number(c.outstanding_due || 0),
+                            });
+                            return (
+                              <>
+                                <a
+                                  href={buildWhatsAppUrl(c.phone, custMsg)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title={c.outstanding_due > 0 ? 'Udhar WhatsApp' : 'WhatsApp'}
+                                  aria-label="WhatsApp customer"
+                                  className="p-2 rounded-xl bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5" />
+                                </a>
+                                <a
+                                  href={buildSmsUrl(c.phone, custMsg)}
+                                  title={c.outstanding_due > 0 ? 'Udhar SMS' : 'SMS'}
+                                  aria-label="SMS customer"
+                                  className="p-2 rounded-xl bg-sky-500/15 text-sky-700 dark:text-sky-300"
+                                >
+                                  <MessageSquare className="w-3.5 h-3.5" />
+                                </a>
+                              </>
+                            );
+                          })()}
                           {c.outstanding_due > 0 ? (
                             <button
                               type="button"

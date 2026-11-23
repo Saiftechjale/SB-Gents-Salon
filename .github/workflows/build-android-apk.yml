@@ -28,25 +28,49 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
-      - name: Install dependencies and build web bundle
-        env:
-          VITE_API_BASE_URL: ${{ vars.APP_URL || secrets.APP_URL }}
+      - name: Install dependencies
         run: |
           npm install --legacy-peer-deps
-          npm run build
+          npm install --no-save --legacy-peer-deps @capacitor/core@^6.2.0 @capacitor/cli@^6.2.0 @capacitor/android@^6.2.0 @capacitor/local-notifications@^6.1.0
 
-      - name: Configure Capacitor & Live Server URL (if APP_URL is set)
+      - name: Configure Android Permissions & Output Folder
+        run: |
+          mkdir -p release-apks
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          node -e '
+            const fs = require("fs");
+            const manifestPath = "android/app/src/main/AndroidManifest.xml";
+            if (fs.existsSync(manifestPath)) {
+              let xml = fs.readFileSync(manifestPath, "utf8");
+              if (!xml.includes("usesCleartextTraffic")) {
+                xml = xml.replace("<application", "<application android:usesCleartextTraffic=\"true\"");
+              }
+              if (!xml.includes("POST_NOTIFICATIONS")) {
+                xml = xml.replace("<application", "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n    <application");
+              }
+              if (!xml.includes("android.permission.VIBRATE")) {
+                xml = xml.replace("<application", "<uses-permission android:name=\"android.permission.VIBRATE\" />\n    <application");
+              }
+              fs.writeFileSync(manifestPath, xml);
+            }
+          '
+
+      - name: Build 1 — Customer APK (com.sbsalon.customer)
         env:
+          VITE_API_BASE_URL: ${{ vars.APP_URL || secrets.APP_URL }}
+          VITE_APP_FLAVOR: CUSTOMER
           APP_URL: ${{ vars.APP_URL || secrets.APP_URL }}
           APP_NAME: ${{ vars.APP_NAME }}
         run: |
-          npm install --no-save --legacy-peer-deps @capacitor/core@^6.2.0 @capacitor/cli@^6.2.0 @capacitor/android@^6.2.0
+          npm run build
           node -e '
             const fs = require("fs");
             const cfg = JSON.parse(fs.readFileSync("capacitor.config.json", "utf8"));
-            if (process.env.APP_NAME && process.env.APP_NAME.trim()) {
-              cfg.appName = process.env.APP_NAME.trim();
-            }
+            const baseName = (process.env.APP_NAME && process.env.APP_NAME.trim()) || "SB Salon";
+            cfg.appId = "com.sbsalon.customer";
+            cfg.appName = `${baseName} Customer`;
             if (process.env.APP_URL && process.env.APP_URL.trim()) {
               cfg.server = {
                 url: process.env.APP_URL.trim().replace(/\/+$/, ""),
@@ -56,41 +80,91 @@ jobs:
             }
             fs.writeFileSync("capacitor.config.json", JSON.stringify(cfg, null, 2));
           '
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
-          npx cap sync android
+          rm -rf android
+          npx cap add android
           node -e '
             const fs = require("fs");
             const manifestPath = "android/app/src/main/AndroidManifest.xml";
-            if (fs.existsSync(manifestPath)) {
-              let xml = fs.readFileSync(manifestPath, "utf8");
-              if (!xml.includes("usesCleartextTraffic")) {
-                xml = xml.replace("<application", "<application android:usesCleartextTraffic=\"true\"");
-              }
-              fs.writeFileSync(manifestPath, xml);
+            let xml = fs.readFileSync(manifestPath, "utf8");
+            if (!xml.includes("usesCleartextTraffic")) {
+              xml = xml.replace("<application", "<application android:usesCleartextTraffic=\"true\"");
             }
+            if (!xml.includes("POST_NOTIFICATIONS")) {
+              xml = xml.replace("<application", "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n    <application");
+            }
+            if (!xml.includes("android.permission.VIBRATE")) {
+              xml = xml.replace("<application", "<uses-permission android:name=\"android.permission.VIBRATE\" />\n    <application");
+            }
+            fs.writeFileSync(manifestPath, xml);
           '
-
-      - name: Build Android Debug APK
-        run: |
+          npx cap sync android
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-apks/customer-app-debug.apk
 
-      - name: Upload Android APK Artifact
+      - name: Build 2 — Salon Shop APK (Malik + Reception + Staff)
+        env:
+          VITE_API_BASE_URL: ${{ vars.APP_URL || secrets.APP_URL }}
+          VITE_APP_FLAVOR: SHOP
+          APP_URL: ${{ vars.APP_URL || secrets.APP_URL }}
+          APP_NAME: ${{ vars.APP_NAME }}
+        run: |
+          npm run build
+          node -e '
+            const fs = require("fs");
+            const cfg = JSON.parse(fs.readFileSync("capacitor.config.json", "utf8"));
+            const baseName = (process.env.APP_NAME && process.env.APP_NAME.trim()) || "SB Salon";
+            cfg.appId = "com.sbsalon.manager";
+            cfg.appName = `${baseName} Manager`;
+            if (process.env.APP_URL && process.env.APP_URL.trim()) {
+              cfg.server = {
+                url: process.env.APP_URL.trim().replace(/\/+$/, ""),
+                cleartext: true,
+                androidScheme: "https"
+              };
+            }
+            fs.writeFileSync("capacitor.config.json", JSON.stringify(cfg, null, 2));
+          '
+          rm -rf android
+          npx cap add android
+          node -e '
+            const fs = require("fs");
+            const manifestPath = "android/app/src/main/AndroidManifest.xml";
+            let xml = fs.readFileSync(manifestPath, "utf8");
+            if (!xml.includes("usesCleartextTraffic")) {
+              xml = xml.replace("<application", "<application android:usesCleartextTraffic=\"true\"");
+            }
+            if (!xml.includes("POST_NOTIFICATIONS")) {
+              xml = xml.replace("<application", "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n    <application");
+            }
+            if (!xml.includes("android.permission.VIBRATE")) {
+              xml = xml.replace("<application", "<uses-permission android:name=\"android.permission.VIBRATE\" />\n    <application");
+            }
+            fs.writeFileSync(manifestPath, xml);
+          '
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-apks/salon-shop-debug.apk
+
+      - name: Upload Both Android APKs
         uses: actions/upload-artifact@v4
         with:
-          name: sb-salon-android-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: sb-salon-android-apks
+          path: release-apks/*.apk
           retention-days: 30
 
-      - name: Publish Direct Download APK Release
+      - name: Publish Direct Download APKs Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest-apk
-          name: Latest Android APK
-          body: "Download `app-debug.apk` directly from Assets below."
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+          name: Latest Android APKs (Customer + Salon Shop)
+          body: |
+            Download APKs directly from Assets below:
+            - **customer-app-debug.apk**: For Customers only (Slot booking, Live queue, UPI billing)
+            - **salon-shop-debug.apk**: For Malik, Reception & Staff login in one app
+          files: release-apks/*.apk
           prerelease: false
           make_latest: true

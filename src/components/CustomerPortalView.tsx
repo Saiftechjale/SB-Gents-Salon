@@ -7,6 +7,8 @@ import {
   Check,
   Home,
   LogIn,
+  MessageCircle,
+  MessageSquare,
   Moon,
   QrCode,
   Receipt,
@@ -23,7 +25,13 @@ import type {
 } from '../types/salon';
 import { Language } from '../lib/i18n';
 import { apiFetch } from '../lib/api';
-import { playAlertChime, sendNativeNotification } from '../lib/alerts';
+import { playAlertChime, requestNotificationPermission, sendNativeNotification } from '../lib/alerts';
+import {
+  buildCustomerBookingToSalonText,
+  buildCustomerReceiptRequestText,
+  buildSmsUrl,
+  buildWhatsAppUrl,
+} from '../lib/messagingTemplates';
 import { buildUpiDeepLinks } from '../lib/upiIntent';
 import {
   cleanDisplayName,
@@ -48,6 +56,7 @@ interface CustomerPortalViewProps {
   darkMode: boolean;
   setDarkMode: (dark: boolean) => void;
   initialPhone?: string;
+  isCustomerApk?: boolean;
   onRefresh: () => Promise<void>;
   notify: (type: 'success' | 'error', message: string) => void;
   onOpenLogin: () => void;
@@ -60,6 +69,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   darkMode,
   setDarkMode,
   initialPhone,
+  isCustomerApk = false,
   onRefresh,
   notify,
   onOpenLogin,
@@ -369,7 +379,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       if (!seenNotifIdsRef.current.has(n.id)) {
         seenNotifIdsRef.current.add(n.id);
         if (!n.is_read) {
-          playAlertChime('customer');
+          playAlertChime('customer', { repeatCount: 3, vibrate: true });
           notify('success', `${n.title}: ${n.message}`);
           sendNativeNotification(n.title, n.message);
         }
@@ -389,28 +399,26 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
         const key = `${myTrackedBooking.id}-15`;
         if (!proximityAlertSentRef.current.has(key)) {
           proximityAlertSentRef.current.add(key);
-          playAlertChime('customer');
-          notify(
-            'success',
-            `टोकन #${myTrackedBooking.token_number}: आपके समय में लगभग ${minsLeft} मिनट बाकी हैं, कृपया तैयार हो जाएं!`
-          );
+          const msg = `टोकन #${myTrackedBooking.token_number}: आपके समय में लगभग ${minsLeft} मिनट बाकी हैं, कृपया तैयार हो जाएं!`;
+          playAlertChime('customer', { repeatCount: 2, vibrate: true });
+          notify('success', msg);
+          sendNativeNotification(`${data.salon.name} — Slot Reminder`, msg);
         }
       } else if (minsLeft <= 5 && minsLeft >= -2) {
         const key = `${myTrackedBooking.id}-5`;
         if (!proximityAlertSentRef.current.has(key)) {
           proximityAlertSentRef.current.add(key);
-          playAlertChime('customer');
-          notify(
-            'success',
-            `टोकन #${myTrackedBooking.token_number}: आपका समय हो गया है, कृपया सैलून पहुंचें!`
-          );
+          const msg = `टोकन #${myTrackedBooking.token_number}: आपका समय हो गया है, कृपया सैलून पहुंचें!`;
+          playAlertChime('customer', { repeatCount: 3, vibrate: true });
+          notify('success', msg);
+          sendNativeNotification(`${data.salon.name} — Turn Ready`, msg);
         }
       }
     };
     check();
     const timer = setInterval(check, 15000);
     return () => clearInterval(timer);
-  }, [myTrackedBooking, notify]);
+  }, [myTrackedBooking, data.salon.name, notify]);
 
   // Create Booking Handler (Screen 1 + Screen 3 1-Tap)
   const submitBooking = async (opts?: {
@@ -442,6 +450,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
 
     localStorage.setItem('sb_customer_phone', cleanPhone);
     localStorage.setItem('sb_customer_name', cleanName);
+    void requestNotificationPermission();
 
     const pref: BookingPreference =
       useBarberId === 'ANY'
@@ -475,7 +484,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       setLastBookedId(created.id);
       localStorage.setItem('sb_last_booking_id', created.id);
       await onRefresh();
-      playAlertChime('customer');
+      playAlertChime('customer', { repeatCount: 2, vibrate: true });
       notify('success', `बुकिंग पक्की! आपका टोकन #${created.token_number} है`);
       setActiveTab('QUEUE');
     } catch (e) {
@@ -1303,9 +1312,50 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
             <div className="rounded-2xl bg-[#EDE9FE] dark:bg-purple-950/40 px-3.5 py-3 flex items-center gap-2.5 text-xs font-bold text-[#5B21B6] dark:text-purple-200">
               <Bell className="w-4 h-4 text-amber-500 shrink-0" />
               <span className="leading-snug">
-                {myTokenAlerts[0]?.message || '1 log bachega tab WhatsApp karenge'}
+                {myTokenAlerts[0]?.message || '1 log bachega tab WhatsApp / App Alert aayega'}
               </span>
             </div>
+
+            {myTrackedBooking && (() => {
+              const bookingMsg = buildCustomerBookingToSalonText({
+                salonName: data.salon.name,
+                customerName: myTrackedBooking.customer_name,
+                customerPhone: myTrackedBooking.customer_phone,
+                tokenNumber: myTrackedBooking.token_number,
+                servicesText:
+                  myTrackedBooking.services?.map((s) => s.service_name).join(' + ') ||
+                  'Salon Service',
+                barberName: cleanDisplayName(myTrackedBooking.barber_name),
+                bookingDate: myTrackedBooking.booking_date,
+                slotTime: myTrackedBooking.slot_time,
+                totalAmount: Number(myTrackedBooking.total_amount || 0),
+              });
+              return (
+                <div className="sb-card p-3 space-y-2">
+                  <div className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                    1-TAP SALON KO BHEJO
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <a
+                      href={buildWhatsAppUrl(data.salon.phone, bookingMsg)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      <span>WhatsApp Bhejo</span>
+                    </a>
+                    <a
+                      href={buildSmsUrl(data.salon.phone, bookingMsg)}
+                      className="py-2.5 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                      <span>SMS Bhejo</span>
+                    </a>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -1453,21 +1503,35 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
               </div>
             )}
 
-            <a
-              href={`https://wa.me/91${data.salon.phone.replace(/\D/g, '').slice(-10)}?text=${encodeURIComponent(
-                `Namaste ${data.salon.name}, mera bill ₹${billingPreview.total} (${billingPreview.items
-                  .map((i) => i.name)
-                  .join(' + ')})${
-                  billingPreview.tokenNumber ? ` · Token #${billingPreview.tokenNumber}` : ''
-                } ke liye receipt bhejein.`
-              )}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 min-h-[48px]"
-            >
-              <span>Bill + receipt bhejo</span>
-              <ArrowRight className="w-5 h-5" />
-            </a>
+            {(() => {
+              const receiptReqMsg = buildCustomerReceiptRequestText({
+                salonName: data.salon.name,
+                totalAmount: billingPreview.total,
+                servicesText: billingPreview.items.map((i) => i.name).join(' + '),
+                tokenNumber: billingPreview.tokenNumber || undefined,
+                paymentMode: billingMode,
+              });
+              return (
+                <div className="grid grid-cols-2 gap-2.5">
+                  <a
+                    href={buildWhatsAppUrl(data.salon.phone, receiptReqMsg)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-purple-500/25 min-h-[48px]"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    <span>WhatsApp Bill</span>
+                  </a>
+                  <a
+                    href={buildSmsUrl(data.salon.phone, receiptReqMsg)}
+                    className="py-3.5 rounded-2xl bg-sky-600 text-white font-extrabold text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-sky-500/20 min-h-[48px]"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    <span>SMS Bhejo</span>
+                  </a>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -1565,7 +1629,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-2"
               >
                 <LogIn className="w-4 h-4" />
-                <span>Login / Role Badlein</span>
+                <span>{isCustomerApk ? 'Apna Number Badlein' : 'Login / Role Badlein'}</span>
               </button>
             </div>
           </div>

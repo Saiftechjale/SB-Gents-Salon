@@ -5,6 +5,8 @@ import {
   History,
   LogIn,
   LogOut,
+  MessageCircle,
+  MessageSquare,
   Play,
   Search,
   User,
@@ -16,6 +18,13 @@ import type {
   SalonBootstrapData,
 } from '../types/salon';
 import { apiFetch } from '../lib/api';
+import {
+  buildBookingConfirmText,
+  buildChairReadyAlertText,
+  buildNextTurnAlertText,
+  buildSmsUrl,
+  buildWhatsAppUrl,
+} from '../lib/messagingTemplates';
 import {
   formatShortDate,
   formatShortTime,
@@ -398,6 +407,35 @@ export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
                     +15m
                   </button>
                 </div>
+
+                {(() => {
+                  const readyMsg = buildChairReadyAlertText({
+                    salonName: data.salon.name,
+                    customerName: activeBooking.customer_name,
+                    tokenNumber: activeBooking.token_number,
+                    barberName: activeBooking.barber_name,
+                  });
+                  return (
+                    <div className="grid grid-cols-2 gap-2">
+                      <a
+                        href={buildWhatsAppUrl(activeBooking.customer_phone, readyMsg)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="py-2 rounded-xl bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-xs font-extrabold flex items-center justify-center gap-1.5"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>WhatsApp Ready</span>
+                      </a>
+                      <a
+                        href={buildSmsUrl(activeBooking.customer_phone, readyMsg)}
+                        className="py-2 rounded-xl bg-sky-500/15 text-sky-700 dark:text-sky-300 text-xs font-extrabold flex items-center justify-center gap-1.5"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>SMS Ready</span>
+                      </a>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -442,10 +480,25 @@ export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
 
                   {waitingBookings.map((b, idx) => {
                     const isNext = idx === 0;
+                    const alertMsg = isNext
+                      ? buildNextTurnAlertText({
+                          salonName: data.salon.name,
+                          customerName: b.customer_name,
+                          tokenNumber: b.token_number,
+                          barberName: b.barber_name,
+                        })
+                      : buildBookingConfirmText({
+                          salonName: data.salon.name,
+                          customerName: b.customer_name,
+                          tokenNumber: b.token_number,
+                          slotTime: b.slot_time,
+                          barberName: b.barber_name,
+                          totalAmount: Number(b.total_amount || 0),
+                        });
                     return (
                       <div
                         key={b.id}
-                        className="px-4 py-3.5 flex items-center justify-between gap-3"
+                        className="px-4 py-3.5 flex items-center justify-between gap-2"
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <div
@@ -466,18 +519,38 @@ export const StaffPortalView: React.FC<StaffPortalViewProps> = ({
                           </div>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateBookingStatus(b.id, 'IN_PROGRESS')}
-                          className={`px-3 py-1.5 rounded-full text-[11px] font-extrabold shrink-0 flex items-center gap-1 ${
-                            isNext
-                              ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                              : 'bg-slate-100 text-slate-600 hover:bg-[#6C3BF5] hover:text-white'
-                          }`}
-                        >
-                          <Play className="w-3 h-3" />
-                          <span>{isNext ? 'Next · Start' : 'Start'}</span>
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <a
+                            href={buildWhatsAppUrl(b.customer_phone, alertMsg)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={isNext ? 'Next turn WhatsApp' : 'WhatsApp bhejo'}
+                            aria-label="WhatsApp"
+                            className="p-2 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                          </a>
+                          <a
+                            href={buildSmsUrl(b.customer_phone, alertMsg)}
+                            title={isNext ? 'Next turn SMS' : 'SMS bhejo'}
+                            aria-label="SMS"
+                            className="p-2 rounded-full bg-sky-500/15 text-sky-700 dark:text-sky-300"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateBookingStatus(b.id, 'IN_PROGRESS')}
+                            className={`px-3 py-1.5 rounded-full text-[11px] font-extrabold shrink-0 flex items-center gap-1 ${
+                              isNext
+                                ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                                : 'bg-slate-100 text-slate-600 hover:bg-[#6C3BF5] hover:text-white'
+                            }`}
+                          >
+                            <Play className="w-3 h-3" />
+                            <span>{isNext ? 'Next · Start' : 'Start'}</span>
+                          </button>
+                        </div>
                       </div>
                     );
                   })}

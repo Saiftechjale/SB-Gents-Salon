@@ -8,6 +8,7 @@ import {
   LogIn,
   LogOut,
   MessageCircle,
+  MessageSquare,
   Play,
   Receipt,
   TrendingUp,
@@ -22,6 +23,13 @@ import type {
   SalonBootstrapData,
 } from '../types/salon';
 import { apiFetch } from '../lib/api';
+import {
+  buildBillReceiptText,
+  buildBookingConfirmText,
+  buildChairReadyAlertText,
+  buildSmsUrl,
+  buildWhatsAppUrl,
+} from '../lib/messagingTemplates';
 import { buildUpiDeepLinks, isValidUpiId } from '../lib/upiIntent';
 import {
   formatShortDate,
@@ -38,6 +46,7 @@ export type ReceptionTab = 'AAJ' | 'WALKIN' | 'BILLING' | 'MORE';
 interface ReceptionPortalViewProps {
   data: SalonBootstrapData;
   isOnline: boolean;
+  isShopApk?: boolean;
   onSaveOfflineDraft: (draft: OfflineDraftBill) => Promise<void>;
   onRefresh: () => Promise<void>;
   notify: (type: 'success' | 'error', message: string) => void;
@@ -49,6 +58,7 @@ interface ReceptionPortalViewProps {
 export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
   data,
   isOnline,
+  isShopApk = false,
   onSaveOfflineDraft,
   onRefresh,
   notify,
@@ -164,7 +174,11 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
   const [billSubmitting, setBillSubmitting] = useState<boolean>(false);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [quickUpiInput, setQuickUpiInput] = useState<string>(data.settings.upi_id || '');
-  const [lastBilledReceiptWa, setLastBilledReceiptWa] = useState<string>('');
+  const [lastBilledReceiptLinks, setLastBilledReceiptLinks] = useState<{
+    waUrl: string;
+    smsUrl: string;
+    label: string;
+  } | null>(null);
 
   const billTotal = selectedBillBooking ? Number(selectedBillBooking.total_amount) : 0;
 
@@ -364,14 +378,22 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
         return;
       }
 
-      const receiptMsg = `Namaste ${selectedBillBooking.customer_name} ji! ${data.salon.name} se aapka bill ₹${billTotal} (${servicesSummary}) receive ho gaya. Dhanyawad!`;
-      const waLink = `https://wa.me/91${selectedBillBooking.customer_phone.replace(/\D/g, '').slice(-10)}?text=${encodeURIComponent(
-        receiptMsg
-      )}`;
-      setLastBilledReceiptWa(waLink);
+      const receiptMsg = buildBillReceiptText({
+        salonName: data.salon.name,
+        customerName: selectedBillBooking.customer_name,
+        totalAmount: billTotal,
+        servicesText: servicesSummary,
+        tokenNumber: selectedBillBooking.token_number,
+        udharAmount: udhar,
+      });
+      setLastBilledReceiptLinks({
+        waUrl: buildWhatsAppUrl(selectedBillBooking.customer_phone, receiptMsg),
+        smsUrl: buildSmsUrl(selectedBillBooking.customer_phone, receiptMsg),
+        label: `${selectedBillBooking.customer_name} (₹${billTotal})`,
+      });
       setBillBookingId('');
       await onRefresh();
-      notify('success', `₹${billTotal} bill saved! WhatsApp receipt bhej sakte hain.`);
+      notify('success', `₹${billTotal} bill saved! WhatsApp ya SMS receipt bhej sakte hain.`);
     } catch (err) {
       notify('error', String(err));
     } finally {
@@ -704,18 +726,36 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                   Live queue link WhatsApp pe
                 </div>
               </div>
-              {createdWalkin && (
-                <a
-                  href={`https://wa.me/91${createdWalkin.customer_phone.replace(/\D/g, '').slice(-10)}?text=${encodeURIComponent(
-                    `Namaste ${createdWalkin.customer_name}, ${data.salon.name} mein aapka Token #${createdWalkin.token_number} lag gaya hai! Stylist: ${createdWalkin.barber_name}.`
-                  )}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-2 rounded-xl bg-emerald-500 text-white text-xs font-bold shrink-0"
-                >
-                  WhatsApp
-                </a>
-              )}
+              {createdWalkin && (() => {
+                const walkinMsg = buildBookingConfirmText({
+                  salonName: data.salon.name,
+                  customerName: createdWalkin.customer_name,
+                  tokenNumber: createdWalkin.token_number,
+                  slotTime: createdWalkin.slot_time,
+                  barberName: createdWalkin.barber_name,
+                  totalAmount: Number(createdWalkin.total_amount || 0),
+                });
+                return (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <a
+                      href={buildWhatsAppUrl(createdWalkin.customer_phone, walkinMsg)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-2 rounded-xl bg-emerald-500 text-white text-xs font-bold flex items-center gap-1"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5" />
+                      <span>WA</span>
+                    </a>
+                    <a
+                      href={buildSmsUrl(createdWalkin.customer_phone, walkinMsg)}
+                      className="px-2.5 py-2 rounded-xl bg-sky-500 text-white text-xs font-bold flex items-center gap-1"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>SMS</span>
+                    </a>
+                  </div>
+                );
+              })()}
             </div>
 
             <button
@@ -737,9 +777,35 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                 Billing
               </h1>
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                Bill banao, UPI lo, receipt WhatsApp pe
+                Bill banao, UPI lo, receipt WhatsApp / SMS pe
               </p>
             </div>
+
+            {lastBilledReceiptLinks && (
+              <div className="sb-card p-3.5 space-y-2 border border-emerald-200 dark:border-emerald-900">
+                <div className="text-xs font-extrabold text-emerald-700 dark:text-emerald-300">
+                  Last Saved Receipt: {lastBilledReceiptLinks.label}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <a
+                    href={lastBilledReceiptLinks.waUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    <span>WhatsApp Receipt</span>
+                  </a>
+                  <a
+                    href={lastBilledReceiptLinks.smsUrl}
+                    className="py-2.5 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    <span>SMS Receipt</span>
+                  </a>
+                </div>
+              </div>
+            )}
 
             {/* Customer Card */}
             {unbilledBookings.length === 0 ? (
@@ -747,17 +813,6 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                 <p className="text-sm font-semibold text-slate-500">
                   Abhi koi pending bill nahi hai.
                 </p>
-                {lastBilledReceiptWa && (
-                  <a
-                    href={lastBilledReceiptWa}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-emerald-600 text-white text-xs font-bold"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                    <span>Last Receipt WhatsApp par bhejein</span>
-                  </a>
-                )}
               </div>
             ) : selectedBillBooking ? (
               <>
@@ -1008,21 +1063,23 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                 </div>
               </button>
 
-              <button
-                type="button"
-                onClick={() => onSwitchRole('CUSTOMER')}
-                className="sb-card p-4 text-left flex items-center gap-3 hover:border-[#6C3BF5]/50"
-              >
-                <div className="w-10 h-10 rounded-xl bg-pink-100 text-pink-600 flex items-center justify-center">
-                  <CalendarCheck className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="text-sm font-extrabold text-[#141028] dark:text-white">
-                    Customer App Preview
+              {!isShopApk && (
+                <button
+                  type="button"
+                  onClick={() => onSwitchRole('CUSTOMER')}
+                  className="sb-card p-4 text-left flex items-center gap-3 hover:border-[#6C3BF5]/50"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-pink-100 text-pink-600 flex items-center justify-center">
+                    <CalendarCheck className="w-5 h-5" />
                   </div>
-                  <div className="text-xs text-slate-500">Slot booking & Live queue</div>
-                </div>
-              </button>
+                  <div>
+                    <div className="text-sm font-extrabold text-[#141028] dark:text-white">
+                      Customer App Preview
+                    </div>
+                    <div className="text-xs text-slate-500">Slot booking & Live queue</div>
+                  </div>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -1130,17 +1187,44 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                   <span>Bill banayein</span>
                 </button>
               )}
-              <a
-                href={`https://wa.me/91${selectedBookingModal.customer_phone.replace(/\D/g, '').slice(-10)}?text=${encodeURIComponent(
-                  `Namaste ${selectedBookingModal.customer_name} ji, ${data.salon.name} mein aapki booking confirm hai (Token #${selectedBookingModal.token_number}, Time: ${formatSlot12h(selectedBookingModal.slot_time)}).`
-                )}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="py-3 rounded-2xl bg-emerald-500/15 text-emerald-700 text-xs font-extrabold flex items-center justify-center gap-1.5"
-              >
-                <MessageCircle className="w-4 h-4" />
-                <span>WhatsApp</span>
-              </a>
+              {(() => {
+                const modalMsg =
+                  selectedBookingModal.status === 'IN_PROGRESS'
+                    ? buildChairReadyAlertText({
+                        salonName: data.salon.name,
+                        customerName: selectedBookingModal.customer_name,
+                        tokenNumber: selectedBookingModal.token_number,
+                        barberName: selectedBookingModal.barber_name,
+                      })
+                    : buildBookingConfirmText({
+                        salonName: data.salon.name,
+                        customerName: selectedBookingModal.customer_name,
+                        tokenNumber: selectedBookingModal.token_number,
+                        slotTime: selectedBookingModal.slot_time,
+                        barberName: selectedBookingModal.barber_name,
+                        totalAmount: Number(selectedBookingModal.total_amount || 0),
+                      });
+                return (
+                  <>
+                    <a
+                      href={buildWhatsAppUrl(selectedBookingModal.customer_phone, modalMsg)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-3 rounded-2xl bg-emerald-500/15 text-emerald-700 text-xs font-extrabold flex items-center justify-center gap-1.5"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      <span>WhatsApp</span>
+                    </a>
+                    <a
+                      href={buildSmsUrl(selectedBookingModal.customer_phone, modalMsg)}
+                      className="py-3 rounded-2xl bg-sky-500/15 text-sky-700 text-xs font-extrabold flex items-center justify-center gap-1.5"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                      <span>SMS Bhejo</span>
+                    </a>
+                  </>
+                );
+              })()}
               <button
                 type="button"
                 onClick={() => handleBookingStatus(selectedBookingModal.id, 'CANCELLED')}

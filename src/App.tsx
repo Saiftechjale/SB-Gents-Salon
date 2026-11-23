@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, X } from 'lucide-react';
 import type { OfflineDraftBill, SalonBootstrapData } from './types/salon';
 import { Language } from './lib/i18n';
-import { playAlertChime, sendNativeNotification } from './lib/alerts';
+import { playAlertChime, requestNotificationPermission, sendNativeNotification } from './lib/alerts';
 import {
   apiFetch,
   apiUrl,
@@ -24,19 +24,36 @@ import { CustomerPortalView } from './components/CustomerPortalView';
 import { ReceptionPortalView } from './components/ReceptionPortalView';
 import { StaffPortalView } from './components/StaffPortalView';
 import { MalikPortalView } from './components/MalikPortalView';
+import { getLocalTodayStr } from './lib/salonUiHelpers';
 
-function getInitialPortalRole(): AppPortalRole {
-  if (typeof window === 'undefined') return 'CUSTOMER';
+type AppFlavor = 'ALL' | 'CUSTOMER' | 'SHOP';
+
+function getAppFlavor(): AppFlavor {
+  if (typeof window !== 'undefined') {
+    const q = (new URLSearchParams(window.location.search).get('flavor') || '').toUpperCase();
+    if (q === 'CUSTOMER') return 'CUSTOMER';
+    if (q === 'SHOP') return 'SHOP';
+  }
+  const envFlavor = String(import.meta.env.VITE_APP_FLAVOR || '').toUpperCase();
+  if (envFlavor === 'CUSTOMER') return 'CUSTOMER';
+  if (envFlavor === 'SHOP') return 'SHOP';
+  return 'ALL';
+}
+
+function getInitialPortalRole(flavor: AppFlavor): AppPortalRole {
+  if (flavor === 'CUSTOMER') return 'CUSTOMER';
+  if (typeof window === 'undefined') return flavor === 'SHOP' ? 'MALIK' : 'CUSTOMER';
   const params = new URLSearchParams(window.location.search);
   const p = (params.get('portal') || '').toLowerCase();
   if (p === 'owner' || p === 'malik') return 'MALIK';
   if (p === 'reception') return 'RECEPTION';
   if (p === 'staff') return 'STAFF';
-  return 'CUSTOMER';
+  return flavor === 'SHOP' ? 'MALIK' : 'CUSTOMER';
 }
 
 export default function App() {
-  const [role, setRole] = useState<AppPortalRole>(getInitialPortalRole);
+  const [appFlavor] = useState<AppFlavor>(() => getAppFlavor());
+  const [role, setRole] = useState<AppPortalRole>(() => getInitialPortalRole(getAppFlavor()));
   const [showLoginScreen, setShowLoginScreen] = useState<boolean>(false);
   const [loginPhone, setLoginPhone] = useState<string>(
     () => localStorage.getItem('sb_customer_phone') || ''
@@ -63,6 +80,8 @@ export default function App() {
 
   const seenOwnerNotifIdsRef = useRef<Set<string>>(new Set());
   const ownerNotifInitRef = useRef<boolean>(false);
+  const seenStaffBookingIdsRef = useRef<Set<string>>(new Set());
+  const staffNotifInitRef = useRef<boolean>(false);
 
   const notify = useCallback((type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -221,7 +240,7 @@ export default function App() {
       if (!seenOwnerNotifIdsRef.current.has(n.id)) {
         seenOwnerNotifIdsRef.current.add(n.id);
         if (!n.is_read && (role === 'MALIK' || role === 'RECEPTION') && ownerUnlocked) {
-          playAlertChime('owner');
+          playAlertChime('owner', { repeatCount: 3, vibrate: true });
           notify('success', `${n.title}: ${n.message}`);
           sendNativeNotification(`${data.salon.name} — ${n.title}`, n.message);
         }
@@ -229,12 +248,40 @@ export default function App() {
     }
   }, [data, ownerNotifications, role, ownerUnlocked, notify]);
 
+  // Instant Staff alert sound + notification when a new booking arrives for their chair
+  useEffect(() => {
+    if (!data) return;
+    const todayStr = getLocalTodayStr();
+    const todayWaiting = data.bookings.filter(
+      (b) => b.booking_date === todayStr && b.status === 'WAITING'
+    );
+    if (!staffNotifInitRef.current) {
+      todayWaiting.forEach((b) => seenStaffBookingIdsRef.current.add(b.id));
+      staffNotifInitRef.current = true;
+      return;
+    }
+    for (const b of todayWaiting) {
+      if (!seenStaffBookingIdsRef.current.has(b.id)) {
+        seenStaffBookingIdsRef.current.add(b.id);
+        const matchesStaff = ownerUnlocked || !loggedInStaffId || b.barber_id === loggedInStaffId;
+        if (role === 'STAFF' && (staffUnlocked || ownerUnlocked) && matchesStaff) {
+          const msg = `Token #${b.token_number} · ${b.customer_name} (${b.services?.map((s) => s.service_name).join(' + ') || 'Service'})`;
+          playAlertChime('owner', { repeatCount: 3, vibrate: true });
+          notify('success', `Nayi Booking: ${msg}`);
+          sendNativeNotification(`${data.salon.name} — Nayi Booking!`, msg);
+        }
+      }
+    }
+  }, [data, role, staffUnlocked, ownerUnlocked, loggedInStaffId, notify]);
+
   const handleSaveOfflineDraft = async (draft: OfflineDraftBill) => {
     await saveOfflineDraftBill(draft);
     await loadOfflineDrafts();
   };
 
   const handleSwitchRole = (targetRole: AppPortalRole) => {
+    if (appFlavor === 'CUSTOMER' && targetRole !== 'CUSTOMER') return;
+    if (appFlavor === 'SHOP' && targetRole === 'CUSTOMER') return;
     if ((targetRole === 'MALIK' || targetRole === 'RECEPTION') && !ownerUnlocked) {
       setRole(targetRole);
       setShowLoginScreen(true);
@@ -253,15 +300,29 @@ export default function App() {
     setOwnerUnlocked(false);
     setStaffUnlocked(false);
     setLoggedInStaffId(undefined);
-    setRole('CUSTOMER');
-    setShowLoginScreen(false);
-    notify('success', 'Logged out — Customer mode active');
-  }, [notify]);
+    if (appFlavor === 'SHOP') {
+      setRole('MALIK');
+      setShowLoginScreen(false);
+      notify('success', 'Logged out — Login screen active');
+    } else {
+      setRole('CUSTOMER');
+      setShowLoginScreen(false);
+      notify('success', 'Logged out — Customer mode active');
+    }
+  }, [appFlavor, notify]);
 
   const needsAuthGate =
     showLoginScreen ||
-    ((role === 'MALIK' || role === 'RECEPTION') && !ownerUnlocked) ||
-    (role === 'STAFF' && !staffUnlocked && !ownerUnlocked);
+    (appFlavor !== 'CUSTOMER' &&
+      (((role === 'MALIK' || role === 'RECEPTION') && !ownerUnlocked) ||
+        (role === 'STAFF' && !staffUnlocked && !ownerUnlocked)));
+
+  const allowedLoginRoles: AppPortalRole[] | undefined =
+    appFlavor === 'CUSTOMER'
+      ? ['CUSTOMER']
+      : appFlavor === 'SHOP'
+      ? ['RECEPTION', 'STAFF', 'MALIK']
+      : undefined;
 
   return (
     <div className="min-h-screen bg-[#F8F7FC] dark:bg-slate-950 text-[#141028] dark:text-slate-100">
@@ -299,6 +360,7 @@ export default function App() {
         <LoginScreen
           salonName={data.salon.name}
           hideAdminRoles={Boolean(data.settings.hide_staff_login)}
+          allowedRoles={allowedLoginRoles}
           initialRole={role}
           initialPhone={loginPhone}
           onClose={
@@ -311,6 +373,7 @@ export default function App() {
           onSuccess={(selectedRole, enteredPhone, matchedStaffId, token) => {
             if (enteredPhone) setLoginPhone(enteredPhone);
             if (token) setAuthToken(token);
+            void requestNotificationPermission();
             if (selectedRole === 'MALIK' || selectedRole === 'RECEPTION') {
               setOwnerUnlocked(true);
               setLoggedInStaffId(undefined);
@@ -328,7 +391,7 @@ export default function App() {
             notify('success', `${selectedRole} screen unlocked!`);
           }}
         />
-      ) : role === 'CUSTOMER' ? (
+      ) : role === 'CUSTOMER' || appFlavor === 'CUSTOMER' ? (
         <CustomerPortalView
           data={data}
           lang={lang}
@@ -336,6 +399,7 @@ export default function App() {
           darkMode={darkMode}
           setDarkMode={setDarkMode}
           initialPhone={loginPhone}
+          isCustomerApk={appFlavor === 'CUSTOMER'}
           onRefresh={fetchBootstrapData}
           notify={notify}
           onOpenLogin={() => setShowLoginScreen(true)}
@@ -344,6 +408,7 @@ export default function App() {
         <ReceptionPortalView
           data={data}
           isOnline={isOnline}
+          isShopApk={appFlavor === 'SHOP'}
           onSaveOfflineDraft={handleSaveOfflineDraft}
           onRefresh={fetchBootstrapData}
           notify={notify}

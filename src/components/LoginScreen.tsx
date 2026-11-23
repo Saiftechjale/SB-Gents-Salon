@@ -7,33 +7,50 @@ export type AppPortalRole = 'CUSTOMER' | 'RECEPTION' | 'STAFF' | 'MALIK';
 interface LoginScreenProps {
   salonName: string;
   hideAdminRoles?: boolean;
+  allowedRoles?: AppPortalRole[];
   initialRole?: AppPortalRole;
   initialPhone?: string;
   onSuccess: (role: AppPortalRole, phone?: string, staffId?: string, token?: string) => void;
   onClose?: () => void;
 }
 
+const ALL_PORTAL_ROLES: { id: AppPortalRole; label: string }[] = [
+  { id: 'CUSTOMER', label: 'Customer' },
+  { id: 'RECEPTION', label: 'Reception' },
+  { id: 'STAFF', label: 'Staff' },
+  { id: 'MALIK', label: 'Malik' },
+];
+
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   salonName,
   hideAdminRoles = false,
+  allowedRoles,
   initialRole = 'CUSTOMER',
   initialPhone = '',
   onSuccess,
   onClose,
 }) => {
-  const [selectedRole, setSelectedRole] = useState<AppPortalRole>(initialRole);
+  const isStrictCustomerOnly =
+    Boolean(allowedRoles && allowedRoles.length === 1 && allowedRoles[0] === 'CUSTOMER');
+
+  const safeInitialRole: AppPortalRole =
+    allowedRoles && allowedRoles.length > 0 && !allowedRoles.includes(initialRole)
+      ? allowedRoles[0]
+      : initialRole;
+
+  const [selectedRole, setSelectedRole] = useState<AppPortalRole>(safeInitialRole);
   const [phone, setPhone] = useState<string>(initialPhone);
   const [digits, setDigits] = useState<string[]>(['', '', '', '']);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [logoTapCount, setLogoTapCount] = useState<number>(0);
   const [adminUnlockedInModal, setAdminUnlockedInModal] = useState<boolean>(
-    () => !hideAdminRoles || initialRole !== 'CUSTOMER'
+    () => !isStrictCustomerOnly && (!hideAdminRoles || safeInitialRole !== 'CUSTOMER')
   );
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
   const handleLogoTap = () => {
-    if (adminUnlockedInModal) return;
+    if (isStrictCustomerOnly || adminUnlockedInModal) return;
     const next = logoTapCount + 1;
     setLogoTapCount(next);
     if (next >= 5) {
@@ -124,13 +141,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   };
 
-  const roles: { id: AppPortalRole; label: string }[] = adminUnlockedInModal
-    ? [
-        { id: 'CUSTOMER', label: 'Customer' },
-        { id: 'RECEPTION', label: 'Reception' },
-        { id: 'STAFF', label: 'Staff' },
-        { id: 'MALIK', label: 'Malik' },
-      ]
+  const roles: { id: AppPortalRole; label: string }[] = isStrictCustomerOnly
+    ? [{ id: 'CUSTOMER', label: 'Customer' }]
+    : allowedRoles && allowedRoles.length > 0
+    ? ALL_PORTAL_ROLES.filter((r) => allowedRoles.includes(r.id))
+    : adminUnlockedInModal
+    ? ALL_PORTAL_ROLES
     : [{ id: 'CUSTOMER', label: 'Customer' }];
 
   return (
@@ -215,7 +231,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             <label className="block text-[11px] font-bold tracking-wider text-slate-500 uppercase">
               AAP KAUN HO?
             </label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className={`grid gap-2 ${roles.length === 3 ? 'grid-cols-3' : 'grid-cols-4'}`}>
               {roles.map((r) => {
                 const active = selectedRole === r.id;
                 return (
