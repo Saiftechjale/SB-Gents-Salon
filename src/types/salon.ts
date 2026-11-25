@@ -1,4 +1,4 @@
-export type UserRole = 'OWNER' | 'STAFF' | 'CUSTOMER';
+export type UserRole = 'OWNER' | 'RECEPTION' | 'STAFF' | 'CUSTOMER';
 
 export type AvailabilityStatus = 'Available' | 'Busy' | 'Break' | 'Not Available';
 
@@ -55,8 +55,20 @@ export interface StaffMember {
   commission_pct: number;
   availability_status: AvailabilityStatus;
   is_active: boolean;
+  has_pin?: boolean;
   avatar_url?: string;
   joined_date: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReceptionAccount {
+  id: string;
+  salon_id: string;
+  name: string;
+  phone: string;
+  is_active: boolean;
+  has_pin?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -86,6 +98,7 @@ export interface Customer {
   total_spent: number;
   outstanding_due: number;
   last_visit_date?: string | null;
+  is_registered?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -254,63 +267,17 @@ export interface OfflineDraftBill {
   error_message?: string;
 }
 
-export interface HeroTextBlock {
-  id: string;
-  text: string;
-  is_active: boolean;
-}
-
-export interface TickerItem {
-  id: string;
-  text: string;
-  is_active: boolean;
-}
-
-export interface SalonOffer {
-  id: string;
-  title: string;
-  badge: string;
-  description: string;
-  valid_until?: string;
-  show_popup: boolean;
-  is_active: boolean;
-  created_at: string;
-}
-
-export interface SalonReview {
-  id: string;
-  customer_name: string;
-  rating: number;
-  comment: string;
-  service_name?: string;
-  is_visible: boolean;
-  created_at: string;
-  updated_at?: string;
-}
-
-export interface SalonShowcaseConfig {
-  hero_image_url: string;
-  hero_images?: string[];
-  hero_badge: string;
-  hero_title: string;
-  hero_subtitle: string;
-  hero_highlights: HeroTextBlock[];
-  ticker_enabled: boolean;
-  ticker_items: TickerItem[];
-  offers: SalonOffer[];
-  footer_tagline?: string;
-  developer_credit?: string;
-}
-
 export interface SalonBootstrapData {
   supabaseConnected: boolean;
   supabaseUrlConfigured: boolean;
   storageMode: 'SUPABASE_POSTGRES' | 'LOCAL_POSTGRES_REPLICA';
+  authRole?: UserRole | 'NONE';
+  needsOwnerSetup?: boolean;
+  isDefaultOwnerPin?: boolean;
   salon: Salon;
   settings: SalonSettings;
-  showcase: SalonShowcaseConfig;
-  reviews: SalonReview[];
   staff: StaffMember[];
+  receptionAccounts?: ReceptionAccount[];
   services: ServiceItem[];
   customers: Customer[];
   timeSlots: TimeSlot[];

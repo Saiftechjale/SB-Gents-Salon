@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode';
 import {
+  AlertTriangle,
   Check,
   Download,
   FileSpreadsheet,
+  KeyRound,
   Lock,
   LogOut,
   MessageCircle,
@@ -20,8 +22,20 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import type { Customer, SalonBootstrapData, ServiceItem, StaffMember } from '../types/salon';
-import { apiFetch, getApiBaseUrl, setApiBaseUrl, setPhoneOfflineMode } from '../lib/api';
+import type {
+  Customer,
+  ReceptionAccount,
+  SalonBootstrapData,
+  ServiceItem,
+  StaffMember,
+} from '../types/salon';
+import {
+  apiFetch,
+  getApiBaseUrl,
+  isPhoneOfflineMode,
+  setApiBaseUrl,
+  setPhoneOfflineMode,
+} from '../lib/api';
 import { exportReportToExcel, exportReportToPDF } from '../lib/exportReports';
 import {
   buildCustomerUdharOrGreetingText,
@@ -171,16 +185,30 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   const [showAddStaff, setShowAddStaff] = useState(false);
   const [newStaffName, setNewStaffName] = useState('');
   const [newStaffPhone, setNewStaffPhone] = useState('');
+  const [newStaffPin, setNewStaffPin] = useState('');
   const [newStaffPct, setNewStaffPct] = useState('40');
   const [newStaffSpecialty, setNewStaffSpecialty] = useState('Senior Barber');
   const [editingStaffId, setEditingStaffId] = useState<string>('');
   const [editStaffName, setEditStaffName] = useState('');
   const [editStaffPhone, setEditStaffPhone] = useState('');
+  const [editStaffPin, setEditStaffPin] = useState('');
   const [editStaffPct, setEditStaffPct] = useState('40');
   const [editStaffSpecialty, setEditStaffSpecialty] = useState('');
   const [confirmDeleteStaffId, setConfirmDeleteStaffId] = useState<string>('');
 
-  // Customers, Udhar, Edit & Delete state
+  // Reception Counter Logins state (Malik-managed)
+  const [showAddReception, setShowAddReception] = useState(false);
+  const [newRecName, setNewRecName] = useState('');
+  const [newRecPhone, setNewRecPhone] = useState('');
+  const [newRecPin, setNewRecPin] = useState('');
+  const [editingRecId, setEditingRecId] = useState<string>('');
+  const [editRecName, setEditRecName] = useState('');
+  const [editRecPhone, setEditRecPhone] = useState('');
+  const [editRecPin, setEditRecPin] = useState('');
+  const [editRecActive, setEditRecActive] = useState(true);
+  const [confirmDeleteRecId, setConfirmDeleteRecId] = useState<string>('');
+
+  // Customers, Udhar, Edit, PIN Reset & Delete state
   const [custSearch, setCustSearch] = useState('');
   const [settleId, setSettleId] = useState('');
   const [settleAmt, setSettleAmt] = useState('');
@@ -189,6 +217,7 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   const [editCustName, setEditCustName] = useState('');
   const [editCustPhone, setEditCustPhone] = useState('');
   const [editCustPref, setEditCustPref] = useState('');
+  const [resetCustPin, setResetCustPin] = useState('');
   const [confirmDeleteCustId, setConfirmDeleteCustId] = useState<string>('');
 
   // Settings & Customization form state
@@ -201,12 +230,20 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   const [slotDuration, setSlotDuration] = useState(String(data.settings.slot_duration_minutes || 30));
   const [regenSlots, setRegenSlots] = useState(false);
   const [hideStaffLogin, setHideStaffLogin] = useState(Boolean(data.settings.hide_staff_login));
-  const [customerApkUrl, setCustomerApkUrl] = useState(
-    data.settings.customer_apk_url ||
-      (typeof window !== 'undefined' && window.location.origin.startsWith('http')
-        ? window.location.origin
-        : '')
-  );
+  const [customerApkUrl, setCustomerApkUrl] = useState(() => {
+    const saved = (data.settings.customer_apk_url || '').trim();
+    const isLocalOrigin = (url: string) =>
+      /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url);
+    if (saved && !isLocalOrigin(saved)) return saved;
+    if (
+      typeof window !== 'undefined' &&
+      window.location.origin.startsWith('http') &&
+      !isLocalOrigin(window.location.origin)
+    ) {
+      return window.location.origin;
+    }
+    return '';
+  });
   const [customerQrDataUrl, setCustomerQrDataUrl] = useState<string>('');
 
   // Services Add / Edit / Delete state
@@ -226,7 +263,6 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   const [newExpAmt, setNewExpAmt] = useState('');
   const [newExpMode, setNewExpMode] = useState<'CASH' | 'UPI'>('CASH');
   const [ownerPin, setOwnerPin] = useState('');
-  const [staffPin, setStaffPin] = useState('');
   const [serverUrlDraft, setServerUrlDraft] = useState(() => getApiBaseUrl());
 
   useEffect(() => {
@@ -238,14 +274,16 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     setCloseTime(data.settings.closing_time);
     setSlotDuration(String(data.settings.slot_duration_minutes || 30));
     setHideStaffLogin(Boolean(data.settings.hide_staff_login));
-    if (data.settings.customer_apk_url) {
-      setCustomerApkUrl(data.settings.customer_apk_url);
+    const saved = (data.settings.customer_apk_url || '').trim();
+    if (saved && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(saved)) {
+      setCustomerApkUrl(saved);
     }
   }, [data.salon, data.settings]);
 
   useEffect(() => {
     const clean = customerApkUrl.trim();
-    if (!clean || !/^https?:\/\//i.test(clean)) {
+    const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(clean);
+    if (!clean || !/^https?:\/\//i.test(clean) || isLocalOrigin) {
       setCustomerQrDataUrl('');
       return;
     }
@@ -271,8 +309,13 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanPhone = newStaffPhone.replace(/\D/g, '').slice(-10);
-    if (!newStaffName.trim() || cleanPhone.length !== 10) {
-      notify('error', 'Staff ka naam aur 10-digit mobile number zaroori hai');
+    const cleanPin = newStaffPin.trim();
+    if (!newStaffName.trim() || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      notify('error', 'Staff ka naam aur sahi 10-digit Indian mobile number daalein');
+      return;
+    }
+    if (!/^\d{4,6}$/.test(cleanPin)) {
+      notify('error', 'Staff login ke liye 4 se 6 digit ka PIN set karein');
       return;
     }
     const res = await apiFetch('/api/staff', {
@@ -281,6 +324,7 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
       body: JSON.stringify({
         name: newStaffName.trim(),
         phone: cleanPhone,
+        pin: cleanPin,
         specialty: newStaffSpecialty.trim() || 'Senior Barber',
         commission_pct: Number(newStaffPct || 40),
       }),
@@ -288,16 +332,18 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     if (!(await handleApiError(res, 'Staff add nahi ho paya'))) return;
     setNewStaffName('');
     setNewStaffPhone('');
+    setNewStaffPin('');
     setNewStaffSpecialty('Senior Barber');
     setShowAddStaff(false);
     await onRefresh();
-    notify('success', 'New staff added!');
+    notify('success', 'New staff + login PIN saved!');
   };
 
   const startEditStaff = (st: StaffMember) => {
     setEditingStaffId(st.id);
     setEditStaffName(st.name);
     setEditStaffPhone(st.phone);
+    setEditStaffPin('');
     setEditStaffPct(String(st.commission_pct));
     setEditStaffSpecialty(st.specialty || '');
     setConfirmDeleteStaffId('');
@@ -307,8 +353,13 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     e.preventDefault();
     if (!editingStaffId) return;
     const cleanPhone = editStaffPhone.replace(/\D/g, '').slice(-10);
-    if (!editStaffName.trim() || cleanPhone.length !== 10) {
-      notify('error', 'Staff ka sahi naam aur 10-digit mobile number daalein');
+    const cleanPin = editStaffPin.trim();
+    if (!editStaffName.trim() || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      notify('error', 'Staff ka sahi naam aur 10-digit Indian mobile number daalein');
+      return;
+    }
+    if (cleanPin && !/^\d{4,6}$/.test(cleanPin)) {
+      notify('error', 'Naya PIN 4 se 6 digits ka number hona chahiye');
       return;
     }
     const res = await apiFetch(`/api/staff/${editingStaffId}`, {
@@ -319,10 +370,12 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
         phone: cleanPhone,
         commission_pct: Number(editStaffPct || 0),
         specialty: editStaffSpecialty.trim(),
+        pin: cleanPin || undefined,
       }),
     });
     if (!(await handleApiError(res, 'Staff update nahi ho paya'))) return;
     setEditingStaffId('');
+    setEditStaffPin('');
     await onRefresh();
     notify('success', 'Staff details updated!');
   };
@@ -333,6 +386,83 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     setConfirmDeleteStaffId('');
     await onRefresh();
     notify('success', 'Staff removed!');
+  };
+
+  const handleAddReception = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanPhone = newRecPhone.replace(/\D/g, '').slice(-10);
+    const cleanPin = newRecPin.trim();
+    if (newRecName.trim().length < 2 || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      notify('error', 'Receptionist ka naam aur sahi 10-digit mobile number daalein');
+      return;
+    }
+    if (!/^\d{4,6}$/.test(cleanPin)) {
+      notify('error', 'Reception login ke liye 4 se 6 digit PIN daalein');
+      return;
+    }
+    const res = await apiFetch('/api/reception-accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: newRecName.trim(),
+        phone: cleanPhone,
+        pin: cleanPin,
+      }),
+    });
+    if (!(await handleApiError(res, 'Reception account nahi ban paya'))) return;
+    setNewRecName('');
+    setNewRecPhone('');
+    setNewRecPin('');
+    setShowAddReception(false);
+    await onRefresh();
+    notify('success', 'Reception Counter login ban gaya!');
+  };
+
+  const startEditReception = (r: ReceptionAccount) => {
+    setEditingRecId(r.id);
+    setEditRecName(r.name);
+    setEditRecPhone(r.phone);
+    setEditRecPin('');
+    setEditRecActive(r.is_active);
+    setConfirmDeleteRecId('');
+  };
+
+  const handleSaveReceptionEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingRecId) return;
+    const cleanPhone = editRecPhone.replace(/\D/g, '').slice(-10);
+    const cleanPin = editRecPin.trim();
+    if (editRecName.trim().length < 2 || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      notify('error', 'Receptionist ka naam aur 10-digit mobile number daalein');
+      return;
+    }
+    if (cleanPin && !/^\d{4,6}$/.test(cleanPin)) {
+      notify('error', 'PIN 4 se 6 digits ka hona chahiye');
+      return;
+    }
+    const res = await apiFetch(`/api/reception-accounts/${editingRecId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: editRecName.trim(),
+        phone: cleanPhone,
+        is_active: editRecActive,
+        pin: cleanPin || undefined,
+      }),
+    });
+    if (!(await handleApiError(res, 'Reception update nahi hua'))) return;
+    setEditingRecId('');
+    setEditRecPin('');
+    await onRefresh();
+    notify('success', 'Reception account updated!');
+  };
+
+  const handleDeleteReception = async (id: string) => {
+    const res = await apiFetch(`/api/reception-accounts/${id}`, { method: 'DELETE' });
+    if (!(await handleApiError(res, 'Reception remove nahi hua'))) return;
+    setConfirmDeleteRecId('');
+    await onRefresh();
+    notify('success', 'Reception account removed!');
   };
 
   const handleSettleUdhar = async (e: React.FormEvent) => {
@@ -359,15 +489,33 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     setEditCustName(c.name);
     setEditCustPhone(c.phone);
     setEditCustPref(c.haircut_preference || '');
+    setResetCustPin('');
     setConfirmDeleteCustId('');
+  };
+
+  const handleResetCustomerPin = async (customerId: string) => {
+    const cleanPin = resetCustPin.trim();
+    if (!/^\d{4,6}$/.test(cleanPin)) {
+      notify('error', 'Naya PIN 4 se 6 digits ka number daalein');
+      return;
+    }
+    const res = await apiFetch(`/api/customers/${customerId}/pin`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: cleanPin }),
+    });
+    if (!(await handleApiError(res, 'Customer PIN reset nahi hua'))) return;
+    setResetCustPin('');
+    await onRefresh();
+    notify('success', 'Customer ka naya PIN set ho gaya!');
   };
 
   const handleSaveCustomerEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingCustId) return;
     const cleanPhone = editCustPhone.replace(/\D/g, '').slice(-10);
-    if (!editCustName.trim() || cleanPhone.length !== 10) {
-      notify('error', 'Customer naam aur 10-digit mobile number daalein');
+    if (!editCustName.trim() || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      notify('error', 'Customer naam aur sahi 10-digit Indian mobile number daalein');
       return;
     }
     const res = await apiFetch(`/api/customers/${editingCustId}`, {
@@ -417,7 +565,9 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
         closing_time: closeTime,
         slot_duration_minutes: Number(slotDuration || 30),
         hide_staff_login: hideStaffLogin,
-        customer_apk_url: customerApkUrl.trim(),
+        customer_apk_url: /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(customerApkUrl.trim())
+          ? ''
+          : customerApkUrl.trim(),
         regenerate_slots: regenSlots,
       }),
     });
@@ -536,19 +686,20 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
 
   const handleSavePins = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ownerPin && !staffPin) return;
+    const cleanOwner = ownerPin.trim();
+    if (!/^\d{4,6}$/.test(cleanOwner)) {
+      notify('error', 'Malik ka naya PIN 4 se 6 digits ka number daalein');
+      return;
+    }
     const res = await apiFetch('/api/auth/pins', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ownerPin: ownerPin.trim() || undefined,
-        staffPin: staffPin.trim() || undefined,
-      }),
+      body: JSON.stringify({ ownerPin: cleanOwner }),
     });
-    if (!(await handleApiError(res, 'PIN update nahi hua'))) return;
+    if (!(await handleApiError(res, 'Malik PIN update nahi hua'))) return;
     setOwnerPin('');
-    setStaffPin('');
-    notify('success', 'Security PINs updated!');
+    await onRefresh();
+    notify('success', 'Malik Secret PIN updated!');
   };
 
   const commissionText =
@@ -640,6 +791,24 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
       </header>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-2 space-y-5">
+        {data.isDefaultOwnerPin && (
+          <div className="max-w-2xl mx-auto rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 px-4 py-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <div className="text-xs font-bold text-amber-900 dark:text-amber-200">
+                Security Alert: Abhi default PIN laga hai. Kripya Settings me apna naya Secret PIN set karein.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab('SETTINGS')}
+              className="px-3 py-1.5 rounded-xl bg-amber-600 text-white text-xs font-extrabold shrink-0 whitespace-nowrap"
+            >
+              PIN Badlein
+            </button>
+          </div>
+        )}
+
         {/* SCREEN 9: ROZ KI KAMAI */}
         {activeTab === 'KAMAI' && (
           <div className="space-y-4 max-w-2xl mx-auto">
@@ -802,6 +971,9 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
 
             {showAddStaff && (
               <form onSubmit={handleAddStaff} className="sb-card p-4 space-y-2.5">
+                <div className="text-xs font-extrabold text-[#141028] dark:text-white">
+                  Naya Staff + Login PIN Banayein
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <input
                     type="text"
@@ -813,11 +985,23 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                   />
                   <input
                     type="tel"
+                    inputMode="numeric"
+                    maxLength={10}
                     required
                     value={newStaffPhone}
-                    onChange={(e) => setNewStaffPhone(e.target.value)}
+                    onChange={(e) => setNewStaffPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
                     placeholder="10-digit Login Mobile"
-                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
+                  />
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={6}
+                    required
+                    value={newStaffPin}
+                    onChange={(e) => setNewStaffPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="Personal Login PIN (4-6 digits)"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
                   />
                   <input
                     type="number"
@@ -833,14 +1017,14 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                     value={newStaffSpecialty}
                     onChange={(e) => setNewStaffSpecialty(e.target.value)}
                     placeholder="Specialty (e.g. Fade & Beard)"
-                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                    className="sm:col-span-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                   />
                 </div>
                 <button
                   type="submit"
-                  className="w-full py-2.5 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold"
+                  className="w-full py-2.5 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold min-h-[44px]"
                 >
-                  Save Staff Member
+                  Save Staff + Login PIN
                 </button>
               </form>
             )}
@@ -869,7 +1053,7 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
               ))}
             </div>
 
-            {/* Staff List Card (with Edit & Delete) */}
+            {/* Staff List Card (with Edit, Individual PIN & Delete) */}
             <div className="sb-card overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
               {staffCommissions.rows.map((r) => {
                 const isEditing = editingStaffId === r.staff.id;
@@ -891,6 +1075,15 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                           </div>
                           <div className="text-[11px] text-slate-500 tabular-nums truncate">
                             +91 {r.staff.phone} · {r.custCount} customers · ₹{r.totalWork.toLocaleString('en-IN')}
+                            {!r.staff.is_owner && (
+                              <span
+                                className={`ml-1.5 font-bold ${
+                                  r.staff.has_pin ? 'text-emerald-600' : 'text-amber-600'
+                                }`}
+                              >
+                                · {r.staff.has_pin ? 'PIN Set ✓' : 'PIN Pending'}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -955,11 +1148,13 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                           />
                           <input
                             type="tel"
+                            inputMode="numeric"
+                            maxLength={10}
                             required
                             value={editStaffPhone}
-                            onChange={(e) => setEditStaffPhone(e.target.value)}
+                            onChange={(e) => setEditStaffPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
                             placeholder="10-digit Phone"
-                            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
                           />
                           <input
                             type="number"
@@ -977,10 +1172,21 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                             placeholder="Specialty"
                             className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                           />
+                          {!r.staff.is_owner && (
+                            <input
+                              type="password"
+                              inputMode="numeric"
+                              maxLength={6}
+                              value={editStaffPin}
+                              onChange={(e) => setEditStaffPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                              placeholder="New Login PIN (khali chhodein agar nahi badalna)"
+                              className="col-span-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
+                            />
+                          )}
                         </div>
                         <button
                           type="submit"
-                          className="w-full py-2 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1"
+                          className="w-full py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1 min-h-[42px]"
                         >
                           <Check className="w-3.5 h-3.5" />
                           <span>Save Changes</span>
@@ -1017,6 +1223,187 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                 <MessageSquare className="w-4 h-4" />
                 <span>SMS Report</span>
               </a>
+            </div>
+
+            {/* Reception Counter Logins (Created Exclusively by Malik) */}
+            <div className="sb-card p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                    Reception Counter Logins ({data.receptionAccounts?.length || 0})
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Receptionist apna mobile aur PIN se sirf counter & billing khol payega
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAddReception((p) => !p)}
+                  className="px-3 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-bold flex items-center gap-1 shrink-0 whitespace-nowrap"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Reception</span>
+                </button>
+              </div>
+
+              {showAddReception && (
+                <form onSubmit={handleAddReception} className="p-3 rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 space-y-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <input
+                      type="text"
+                      required
+                      value={newRecName}
+                      onChange={(e) => setNewRecName(e.target.value)}
+                      placeholder="Receptionist Name"
+                      className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold"
+                    />
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      maxLength={10}
+                      required
+                      value={newRecPhone}
+                      onChange={(e) => setNewRecPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                      placeholder="10-digit Mobile"
+                      className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold tabular-nums"
+                    />
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={6}
+                      required
+                      value={newRecPin}
+                      onChange={(e) => setNewRecPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="Login PIN (4-6 digits)"
+                      className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold tabular-nums"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold min-h-[42px]"
+                  >
+                    Save Reception Login
+                  </button>
+                </form>
+              )}
+
+              {(!data.receptionAccounts || data.receptionAccounts.length === 0) ? (
+                <div className="rounded-xl bg-[#F8F7FC] dark:bg-slate-950 px-3.5 py-3 text-xs text-slate-500">
+                  Abhi koi alag Receptionist account nahi bana hai. Upar &ldquo;+ Reception&rdquo; se banayein.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {data.receptionAccounts.map((rec) => {
+                    const isEditing = editingRecId === rec.id;
+                    const isConfirmDelete = confirmDeleteRecId === rec.id;
+                    return (
+                      <div key={rec.id} className="py-2.5 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                              {rec.name}
+                            </div>
+                            <div className="text-[11px] text-slate-500 tabular-nums">
+                              +91 {rec.phone} ·{' '}
+                              <span className={rec.is_active ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold'}>
+                                {rec.is_active ? 'Active' : 'Disabled'}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => (isEditing ? setEditingRecId('') : startEditReception(rec))}
+                              className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                              aria-label="Edit reception"
+                            >
+                              {isEditing ? <X className="w-3.5 h-3.5" /> : <Pencil className="w-3.5 h-3.5" />}
+                            </button>
+                            {isConfirmDelete ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteReception(rec.id)}
+                                  className="px-2 py-1.5 rounded-lg bg-rose-600 text-white text-[10px] font-extrabold"
+                                >
+                                  Hatao
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteRecId('')}
+                                  className="px-2 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-[10px] font-bold"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteRecId(rec.id)}
+                                className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/30 text-rose-500"
+                                aria-label="Delete reception"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {isEditing && (
+                          <form onSubmit={handleSaveReceptionEdit} className="p-2.5 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 space-y-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              <input
+                                type="text"
+                                required
+                                value={editRecName}
+                                onChange={(e) => setEditRecName(e.target.value)}
+                                placeholder="Name"
+                                className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold"
+                              />
+                              <input
+                                type="tel"
+                                inputMode="numeric"
+                                maxLength={10}
+                                required
+                                value={editRecPhone}
+                                onChange={(e) => setEditRecPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                                placeholder="10-digit Mobile"
+                                className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold tabular-nums"
+                              />
+                              <input
+                                type="password"
+                                inputMode="numeric"
+                                maxLength={6}
+                                value={editRecPin}
+                                onChange={(e) => setEditRecPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                placeholder="New PIN (optional)"
+                                className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold tabular-nums"
+                              />
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <label className="flex items-center gap-1.5 text-xs font-bold text-slate-600 dark:text-slate-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={editRecActive}
+                                  onChange={(e) => setEditRecActive(e.target.checked)}
+                                />
+                                <span>Login Active</span>
+                              </label>
+                              <button
+                                type="submit"
+                                className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center gap-1"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Save</span>
+                              </button>
+                            </div>
+                          </form>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1092,7 +1479,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                             {c.name}
                           </div>
                           <div className="text-xs text-slate-500 tabular-nums">
-                            +91 {c.phone} · {c.total_visits} visits · ₹{c.total_spent} spent
+                            +91 {c.phone} · {c.total_visits} visits · ₹{c.total_spent} spent ·{' '}
+                            <span className={c.is_registered ? 'text-[#6C3BF5] font-bold' : 'text-slate-400'}>
+                              {c.is_registered ? 'App Account' : 'Walk-in'}
+                            </span>
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
@@ -1178,40 +1568,64 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                       </div>
 
                       {isEditing && (
-                        <form onSubmit={handleSaveCustomerEdit} className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+                          <form onSubmit={handleSaveCustomerEdit} className="space-y-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <input
+                                type="text"
+                                required
+                                value={editCustName}
+                                onChange={(e) => setEditCustName(e.target.value)}
+                                placeholder="Customer Name"
+                                className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                              />
+                              <input
+                                type="tel"
+                                inputMode="numeric"
+                                maxLength={10}
+                                required
+                                value={editCustPhone}
+                                onChange={(e) => setEditCustPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                                placeholder="10-digit Mobile"
+                                className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
+                              />
+                            </div>
                             <input
                               type="text"
-                              required
-                              value={editCustName}
-                              onChange={(e) => setEditCustName(e.target.value)}
-                              placeholder="Customer Name"
-                              className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                              value={editCustPref}
+                              onChange={(e) => setEditCustPref(e.target.value)}
+                              placeholder="Haircut Preference Note"
+                              className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
                             />
+                            <button
+                              type="submit"
+                              className="w-full py-2 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Save Customer</span>
+                            </button>
+                          </form>
+
+                          <div className="flex gap-2 pt-1">
                             <input
-                              type="tel"
-                              required
-                              value={editCustPhone}
-                              onChange={(e) => setEditCustPhone(e.target.value)}
-                              placeholder="10-digit Mobile"
-                              className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                              type="password"
+                              inputMode="numeric"
+                              maxLength={6}
+                              value={resetCustPin}
+                              onChange={(e) => setResetCustPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                              placeholder="Customer PIN Reset (4-6 digits)"
+                              className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
                             />
+                            <button
+                              type="button"
+                              onClick={() => handleResetCustomerPin(c.id)}
+                              className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold flex items-center gap-1 whitespace-nowrap"
+                            >
+                              <KeyRound className="w-3.5 h-3.5" />
+                              <span>Reset PIN</span>
+                            </button>
                           </div>
-                          <input
-                            type="text"
-                            value={editCustPref}
-                            onChange={(e) => setEditCustPref(e.target.value)}
-                            placeholder="Haircut Preference Note"
-                            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
-                          />
-                          <button
-                            type="submit"
-                            className="w-full py-2 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            <span>Save Customer</span>
-                          </button>
-                        </form>
+                        </div>
                       )}
                     </div>
                   );
@@ -1602,30 +2016,26 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
               </div>
 
               <form onSubmit={handleSavePins} className="space-y-2.5">
-                <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-slate-400">
+                    Malik Login PIN Badlein (Staff &amp; Reception PIN Staff tab me set karein)
+                  </label>
                   <input
                     type="password"
                     inputMode="numeric"
+                    maxLength={6}
                     value={ownerPin}
-                    onChange={(e) => setOwnerPin(e.target.value)}
-                    placeholder="New Owner/Malik PIN (4-6 digits)"
-                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
-                  />
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    value={staffPin}
-                    onChange={(e) => setStaffPin(e.target.value)}
-                    placeholder="New Staff PIN (4-6 digits)"
-                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                    onChange={(e) => setOwnerPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="New Malik Secret PIN (4-6 digits)"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold tabular-nums"
                   />
                 </div>
                 <button
                   type="submit"
-                  className="w-full py-2.5 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold flex items-center justify-center gap-1.5"
+                  className="w-full py-2.5 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[42px]"
                 >
                   <Lock className="w-3.5 h-3.5" />
-                  <span>Update Security PINs</span>
+                  <span>Update Malik PIN</span>
                 </button>
               </form>
             </div>
@@ -1652,6 +2062,11 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                   Save
                 </button>
               </div>
+              {/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(customerApkUrl.trim()) && (
+                <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                  https://localhost sirf phone ke andar ka local link hai. Yahan apna GitHub APK download link ya live website URL daalein.
+                </p>
+              )}
               {customerQrDataUrl && (
                 <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-4 flex flex-col items-center gap-2.5 text-center">
                   <div className="text-sm font-extrabold text-[#141028] dark:text-white">
@@ -1689,9 +2104,20 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                 }}
                 className="sb-card p-4 space-y-2.5"
               >
-                <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                  <Wifi className="w-3.5 h-3.5 text-[#6C3BF5]" />
-                  <span>Live Server Sync</span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <Wifi className="w-3.5 h-3.5 text-[#6C3BF5]" />
+                    <span>Live Server Sync</span>
+                  </div>
+                  <span
+                    className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                      !isPhoneOfflineMode() && getApiBaseUrl()
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-amber-100 text-amber-700'
+                    }`}
+                  >
+                    {!isPhoneOfflineMode() && getApiBaseUrl() ? 'Live Connected' : 'Local Phone Only'}
+                  </span>
                 </div>
                 <div className="flex gap-2">
                   <input

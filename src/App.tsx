@@ -58,6 +58,9 @@ export default function App() {
   const [loginPhone, setLoginPhone] = useState<string>(
     () => localStorage.getItem('sb_customer_phone') || ''
   );
+  const [customerSessionName, setCustomerSessionName] = useState<string>(
+    () => localStorage.getItem('sb_customer_name') || ''
+  );
   const [lang, setLang] = useState<Language>('en');
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(
@@ -65,7 +68,9 @@ export default function App() {
   );
 
   const [ownerUnlocked, setOwnerUnlocked] = useState<boolean>(false);
+  const [receptionUnlocked, setReceptionUnlocked] = useState<boolean>(false);
   const [staffUnlocked, setStaffUnlocked] = useState<boolean>(false);
+  const [customerUnlocked, setCustomerUnlocked] = useState<boolean>(false);
   const [loggedInStaffId, setLoggedInStaffId] = useState<string | undefined>(undefined);
 
   const [data, setData] = useState<SalonBootstrapData | null>(null);
@@ -217,15 +222,33 @@ export default function App() {
         .subscribe();
     }
 
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        fetchBootstrapData();
+      }
+    };
+
+    if (!phoneOfflineMode) {
+      pollTimer = setInterval(() => {
+        fetchBootstrapData();
+      }, 12000);
+      window.addEventListener('focus', handleVisibilityOrFocus);
+      document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    }
+
     return () => {
       evtSource?.close();
+      if (pollTimer) clearInterval(pollTimer);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       if (sbChannel && supabase) {
         supabase.removeChannel(sbChannel);
       }
     };
   }, [fetchBootstrapData, phoneOfflineMode]);
 
-  // Instant Owner / Reception notification sound on new customer booking
+  // Instant Owner / Reception notification sound on new customer booking or registration
   const ownerNotifications = (data?.notifications || []).filter(
     (n) => n.recipient_role === 'OWNER'
   );
@@ -239,14 +262,18 @@ export default function App() {
     for (const n of ownerNotifications) {
       if (!seenOwnerNotifIdsRef.current.has(n.id)) {
         seenOwnerNotifIdsRef.current.add(n.id);
-        if (!n.is_read && (role === 'MALIK' || role === 'RECEPTION') && ownerUnlocked) {
+        if (
+          !n.is_read &&
+          (role === 'MALIK' || role === 'RECEPTION') &&
+          (ownerUnlocked || receptionUnlocked)
+        ) {
           playAlertChime('owner', { repeatCount: 3, vibrate: true });
           notify('success', `${n.title}: ${n.message}`);
           sendNativeNotification(`${data.salon.name} — ${n.title}`, n.message);
         }
       }
     }
-  }, [data, ownerNotifications, role, ownerUnlocked, notify]);
+  }, [data, ownerNotifications, role, ownerUnlocked, receptionUnlocked, notify]);
 
   // Instant Staff alert sound + notification when a new booking arrives for their chair
   useEffect(() => {
@@ -282,24 +309,32 @@ export default function App() {
   const handleSwitchRole = (targetRole: AppPortalRole) => {
     if (appFlavor === 'CUSTOMER' && targetRole !== 'CUSTOMER') return;
     if (appFlavor === 'SHOP' && targetRole === 'CUSTOMER') return;
-    if ((targetRole === 'MALIK' || targetRole === 'RECEPTION') && !ownerUnlocked) {
-      setRole(targetRole);
+    if (targetRole === 'MALIK' && !ownerUnlocked) {
+      setRole('MALIK');
+      setShowLoginScreen(true);
+      return;
+    }
+    if (targetRole === 'RECEPTION' && !receptionUnlocked && !ownerUnlocked) {
+      setRole('RECEPTION');
       setShowLoginScreen(true);
       return;
     }
     if (targetRole === 'STAFF' && !staffUnlocked && !ownerUnlocked) {
-      setRole(targetRole);
+      setRole('STAFF');
       setShowLoginScreen(true);
       return;
     }
     setRole(targetRole);
   };
 
-  const handleLogout = useCallback(() => {
+  const handleLogout = useCallback(async () => {
     setAuthToken(null);
     setOwnerUnlocked(false);
+    setReceptionUnlocked(false);
     setStaffUnlocked(false);
+    setCustomerUnlocked(false);
     setLoggedInStaffId(undefined);
+    await fetchBootstrapData();
     if (appFlavor === 'SHOP') {
       setRole('MALIK');
       setShowLoginScreen(false);
@@ -307,14 +342,16 @@ export default function App() {
     } else {
       setRole('CUSTOMER');
       setShowLoginScreen(false);
-      notify('success', 'Logged out — Customer mode active');
+      notify('success', 'Logged out safely');
     }
-  }, [appFlavor, notify]);
+  }, [appFlavor, fetchBootstrapData, notify]);
 
   const needsAuthGate =
     showLoginScreen ||
+    Boolean(data?.needsOwnerSetup && (role !== 'CUSTOMER' || appFlavor === 'SHOP')) ||
     (appFlavor !== 'CUSTOMER' &&
-      (((role === 'MALIK' || role === 'RECEPTION') && !ownerUnlocked) ||
+      ((role === 'MALIK' && !ownerUnlocked) ||
+        (role === 'RECEPTION' && !receptionUnlocked && !ownerUnlocked) ||
         (role === 'STAFF' && !staffUnlocked && !ownerUnlocked)));
 
   const allowedLoginRoles: AppPortalRole[] | undefined =
@@ -359,6 +396,7 @@ export default function App() {
       ) : needsAuthGate ? (
         <LoginScreen
           salonName={data.salon.name}
+          needsOwnerSetup={Boolean(data.needsOwnerSetup)}
           hideAdminRoles={Boolean(data.settings.hide_staff_login)}
           allowedRoles={allowedLoginRoles}
           initialRole={role}
@@ -370,25 +408,46 @@ export default function App() {
                 }
               : undefined
           }
-          onSuccess={(selectedRole, enteredPhone, matchedStaffId, token) => {
+          onSuccess={async (selectedRole, enteredPhone, matchedStaffId, token, displayName) => {
             if (enteredPhone) setLoginPhone(enteredPhone);
-            if (token) setAuthToken(token);
+            setAuthToken(token || null);
             void requestNotificationPermission();
-            if (selectedRole === 'MALIK' || selectedRole === 'RECEPTION') {
+
+            if (selectedRole === 'MALIK') {
               setOwnerUnlocked(true);
+              setReceptionUnlocked(false);
+              setStaffUnlocked(false);
+              setCustomerUnlocked(false);
+              setLoggedInStaffId(undefined);
+            } else if (selectedRole === 'RECEPTION') {
+              setOwnerUnlocked(false);
+              setReceptionUnlocked(true);
+              setStaffUnlocked(false);
+              setCustomerUnlocked(false);
               setLoggedInStaffId(undefined);
             } else if (selectedRole === 'STAFF') {
+              setOwnerUnlocked(false);
+              setReceptionUnlocked(false);
               setStaffUnlocked(true);
+              setCustomerUnlocked(false);
               setLoggedInStaffId(matchedStaffId);
             } else {
-              setAuthToken(null);
               setOwnerUnlocked(false);
+              setReceptionUnlocked(false);
               setStaffUnlocked(false);
+              setCustomerUnlocked(Boolean(token));
               setLoggedInStaffId(undefined);
+              if (enteredPhone) localStorage.setItem('sb_customer_phone', enteredPhone);
+              if (displayName) {
+                setCustomerSessionName(displayName);
+                localStorage.setItem('sb_customer_name', displayName);
+              }
             }
+
             setRole(selectedRole);
             setShowLoginScreen(false);
-            notify('success', `${selectedRole} screen unlocked!`);
+            await fetchBootstrapData();
+            notify('success', `${selectedRole} login successful!`);
           }}
         />
       ) : role === 'CUSTOMER' || appFlavor === 'CUSTOMER' ? (
@@ -399,16 +458,23 @@ export default function App() {
           darkMode={darkMode}
           setDarkMode={setDarkMode}
           initialPhone={loginPhone}
+          initialName={customerSessionName}
           isCustomerApk={appFlavor === 'CUSTOMER'}
+          isCustomerLoggedIn={customerUnlocked}
           onRefresh={fetchBootstrapData}
           notify={notify}
-          onOpenLogin={() => setShowLoginScreen(true)}
+          onOpenLogin={() => {
+            setRole('CUSTOMER');
+            setShowLoginScreen(true);
+          }}
+          onLogout={customerUnlocked ? handleLogout : undefined}
         />
       ) : role === 'RECEPTION' ? (
         <ReceptionPortalView
           data={data}
           isOnline={isOnline}
           isShopApk={appFlavor === 'SHOP'}
+          canSwitchToOwner={ownerUnlocked}
           onSaveOfflineDraft={handleSaveOfflineDraft}
           onRefresh={fetchBootstrapData}
           notify={notify}

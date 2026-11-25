@@ -21,13 +21,12 @@ import type {
   AttendanceRecord,
   CustomerServiceHistory,
   NotificationItem,
-  SalonOffer,
-  SalonReview,
-  SalonShowcaseConfig,
+  ReceptionAccount,
   AvailabilityStatus,
   BookingPreference,
   BookingType,
   BookingStatus,
+  UserRole,
 } from './src/types/salon';
 
 dotenv.config();
@@ -37,7 +36,6 @@ const DATA_DIR = path.resolve(process.cwd(), '.data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'sb_salon_db.json');
 const SCHEMA_FILE = path.resolve(process.cwd(), 'supabase/schema.sql');
-const DEFAULT_HERO_IMAGE = '/src/assets/images/salon_hero_interior_1795068719871.jpg';
 
 function normalizeSupabaseUrl(rawUrl: string): string {
   const trimmed = rawUrl.trim();
@@ -74,10 +72,22 @@ const supabaseAdmin: SupabaseClient | null = isSupabaseConfigured
     })
   : null;
 
+interface SecurityPinsStore {
+  ownerClaimed: boolean;
+  isDefaultOwnerPin?: boolean;
+  ownerPinHash: string;
+  staffPinHashes: Record<string, string>;
+  receptionPinHashes: Record<string, string>;
+  customerPinHashes: Record<string, string>;
+  ownerPin?: string;
+  staffPin?: string;
+}
+
 interface DatabaseStore {
   salon: Salon;
   settings: SalonSettings;
   staff: StaffMember[];
+  receptionAccounts: ReceptionAccount[];
   services: ServiceItem[];
   customers: Customer[];
   timeSlots: TimeSlot[];
@@ -90,45 +100,7 @@ interface DatabaseStore {
   attendance: AttendanceRecord[];
   serviceHistory: CustomerServiceHistory[];
   notifications: NotificationItem[];
-  showcase?: SalonShowcaseConfig;
-  reviews?: SalonReview[];
-  securityPins?: {
-    ownerPin: string;
-    staffPin: string;
-  };
-}
-
-function createDefaultShowcase(): SalonShowcaseConfig {
-  return {
-    hero_image_url: DEFAULT_HERO_IMAGE,
-    hero_images: [DEFAULT_HERO_IMAGE],
-    hero_badge: 'Gents Salon & Grooming',
-    hero_title: '',
-    hero_subtitle: 'Precision Haircuts, Beard Styling & Luxury Grooming',
-    hero_highlights: [
-      { id: 'hl-1', text: 'AC Lounge & Hygienic Tools', is_active: true },
-      { id: 'hl-2', text: 'Zero Wait Live Queue Tracking', is_active: true },
-    ],
-    ticker_enabled: true,
-    ticker_items: [
-      { id: 'tk-1', text: 'Welcome! Book your slot online or via WhatsApp', is_active: true },
-      { id: 'tk-2', text: 'Haircut + Beard Combo available today', is_active: true },
-    ],
-    offers: [
-      {
-        id: 'offer-welcome',
-        title: 'Haircut + Beard Combo Special',
-        badge: 'COMBO OFFER',
-        description: 'Book Haircut + Beard Trimming today for priority token service.',
-        valid_until: '',
-        show_popup: true,
-        is_active: true,
-        created_at: new Date().toISOString(),
-      },
-    ],
-    footer_tagline: '',
-    developer_credit: 'Mirza Saif',
-  };
+  securityPins: SecurityPinsStore;
 }
 
 function shiftTimeMinutes(hhmm: string, deltaMinutes: number): string {
@@ -138,6 +110,16 @@ function shiftTimeMinutes(hhmm: string, deltaMinutes: number): string {
   const nh = String(Math.floor(clamped / 60)).padStart(2, '0');
   const nm = String(clamped % 60).padStart(2, '0');
   return `${nh}:${nm}`;
+}
+
+function formatTime12h(hhmm: string): string {
+  const [hStr, mStr] = (hhmm || '09:00').split(':');
+  const h = Number(hStr);
+  const m = Number(mStr);
+  if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${suffix}`;
 }
 
 function getTodayDateString(): string {
@@ -273,6 +255,7 @@ function createInitialDatabase(): DatabaseStore {
     salon,
     settings,
     staff: [ownerBarber, staff1, staff2],
+    receptionAccounts: [],
     services,
     customers: [],
     timeSlots,
@@ -316,18 +299,58 @@ function createInitialDatabase(): DatabaseStore {
     ],
     serviceHistory: [],
     notifications: [],
+    securityPins: {
+      ownerClaimed: false,
+      isDefaultOwnerPin: false,
+      ownerPinHash: '',
+      staffPinHashes: {},
+      receptionPinHashes: {},
+      customerPinHashes: {},
+    },
   };
 }
+
+function isValidIndianMobile(phone: string): boolean {
+  return /^[6-9]\d{9}$/.test(phone);
+}
+
+function isValidPin(pin: string): boolean {
+  return /^\d{4,6}$/.test(pin);
+}
+
+function hashPin(pin: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(pin, salt, 32).toString('hex');
+  return `${salt}:${derived}`;
+}
+
+function verifyPinHash(pin: string, stored: string): boolean {
+  if (!stored || !stored.includes(':')) return false;
+  const [salt, expectedHex] = stored.split(':');
+  if (!salt || !expectedHex) return false;
+  try {
+    const actual = crypto.scryptSync(pin, salt, 32);
+    const expected = Buffer.from(expectedHex, 'hex');
+    if (actual.length !== expected.length) return false;
+    return crypto.timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
+}
+
+let dbExistedOnDisk = false;
 
 function loadDatabase(): DatabaseStore {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
   if (!fs.existsSync(DB_FILE)) {
+    dbExistedOnDisk = false;
     const initial = createInitialDatabase();
     fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
     return initial;
   }
+  dbExistedOnDisk = true;
   try {
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
     return JSON.parse(raw) as DatabaseStore;
@@ -343,20 +366,48 @@ if (db.settings.upi_id === undefined) db.settings.upi_id = '';
 if (!db.settings.upi_merchant_name) db.settings.upi_merchant_name = db.salon.name || 'SB Gents Salon';
 if (db.settings.hide_staff_login === undefined) db.settings.hide_staff_login = false;
 if (db.settings.customer_apk_url === undefined) db.settings.customer_apk_url = '';
+if (!Array.isArray(db.receptionAccounts)) db.receptionAccounts = [];
+// Clean up deprecated showcase/reviews properties if present on older DB file
+delete (db as unknown as Record<string, unknown>).showcase;
+delete (db as unknown as Record<string, unknown>).reviews;
+
 if (!db.securityPins) {
-  db.securityPins = { ownerPin: '1234', staffPin: '0000' };
+  db.securityPins = {
+    ownerClaimed: dbExistedOnDisk,
+    isDefaultOwnerPin: false,
+    ownerPinHash: '',
+    staffPinHashes: {},
+    receptionPinHashes: {},
+    customerPinHashes: {},
+  };
 }
-if (!db.showcase) {
-  db.showcase = createDefaultShowcase();
+if (!db.securityPins.staffPinHashes) db.securityPins.staffPinHashes = {};
+if (!db.securityPins.receptionPinHashes) db.securityPins.receptionPinHashes = {};
+if (!db.securityPins.customerPinHashes) db.securityPins.customerPinHashes = {};
+
+// Migrate legacy plaintext PINs into salted scrypt hashes cleanly without breaking existing shop owner
+if (db.securityPins.ownerPin) {
+  const legacyOwnerPin = String(db.securityPins.ownerPin).trim();
+  if (!db.securityPins.ownerPinHash && isValidPin(legacyOwnerPin)) {
+    db.securityPins.ownerPinHash = hashPin(legacyOwnerPin);
+    db.securityPins.isDefaultOwnerPin = legacyOwnerPin === '1234';
+  }
+  db.securityPins.ownerClaimed = true;
+  delete db.securityPins.ownerPin;
 }
-if (!Array.isArray(db.showcase.hero_images) || db.showcase.hero_images.length === 0) {
-  db.showcase.hero_images = [db.showcase.hero_image_url || DEFAULT_HERO_IMAGE];
+if (db.securityPins.staffPin) {
+  const legacyStaffPin = String(db.securityPins.staffPin).trim();
+  if (isValidPin(legacyStaffPin)) {
+    db.staff.forEach((s) => {
+      if (!s.is_owner && !db.securityPins.staffPinHashes[s.id]) {
+        db.securityPins.staffPinHashes[s.id] = hashPin(legacyStaffPin);
+      }
+    });
+  }
+  delete db.securityPins.staffPin;
 }
-if (db.showcase.developer_credit === undefined) {
-  db.showcase.developer_credit = 'Mirza Saif';
-}
-if (!Array.isArray(db.reviews)) {
-  db.reviews = [];
+if (dbExistedOnDisk && !db.securityPins.ownerClaimed && db.securityPins.ownerPinHash) {
+  db.securityPins.ownerClaimed = true;
 }
 
 function saveDatabase(): void {
@@ -365,6 +416,7 @@ function saveDatabase(): void {
   }
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
 }
+saveDatabase();
 
 // Helper to replicate write operations to Supabase PostgreSQL when credentials are configured
 async function syncTableRowToSupabase(table: string, row: Record<string, unknown>, onConflict?: string) {
@@ -376,10 +428,27 @@ async function syncTableRowToSupabase(table: string, row: Record<string, unknown
   }
 }
 
+async function syncAuthStateToSupabase(): Promise<void> {
+  if (!supabaseAdmin) return;
+  try {
+    await supabaseAdmin.from('salon_auth_state').upsert(
+      {
+        salon_id: db.salon.id,
+        reception_accounts: db.receptionAccounts,
+        security_pins: db.securityPins,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'salon_id' }
+    );
+  } catch {
+    // Table optional if user has not yet re-run updated schema.sql
+  }
+}
+
 // Realtime Server-Sent Events clients for instant queue & dashboard updates
 const sseClients = new Set<Response>();
-function broadcastRealtimeUpdate(eventType: string, payload?: unknown) {
-  const msg = `data: ${JSON.stringify({ type: eventType, timestamp: new Date().toISOString(), payload })}\n\n`;
+function broadcastRealtimeUpdate(eventType: string) {
+  const msg = `data: ${JSON.stringify({ type: eventType, timestamp: new Date().toISOString() })}\n\n`;
   for (const client of sseClients) {
     try {
       client.write(msg);
@@ -418,11 +487,23 @@ function constantTimeMatch(a: string, b: string): boolean {
   return crypto.timingSafeEqual(hashA, hashB);
 }
 
-function signPortalToken(role: 'OWNER' | 'STAFF', staffId?: string): string {
+interface PortalSession {
+  role: UserRole;
+  staffId: string | null;
+  receptionId: string | null;
+  customerId: string | null;
+  phone: string | null;
+  exp: number;
+}
+
+function signPortalToken(session: Omit<PortalSession, 'exp'>): string {
   const payload = Buffer.from(
     JSON.stringify({
-      role,
-      staffId: staffId || null,
+      role: session.role,
+      staffId: session.staffId || null,
+      receptionId: session.receptionId || null,
+      customerId: session.customerId || null,
+      phone: session.phone || null,
       exp: Date.now() + 12 * 60 * 60 * 1000,
     })
   ).toString('base64url');
@@ -430,10 +511,7 @@ function signPortalToken(role: 'OWNER' | 'STAFF', staffId?: string): string {
   return `${payload}.${sig}`;
 }
 
-function verifyPortalToken(
-  req: Request,
-  requiredRole?: 'OWNER' | 'STAFF'
-): { role: 'OWNER' | 'STAFF'; staffId: string | null } | null {
+function verifyPortalToken(req: Request): PortalSession | null {
   const authHeader = String(req.headers.authorization || '');
   if (!authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.slice(7).trim();
@@ -443,24 +521,61 @@ function verifyPortalToken(
   const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
   if (!constantTimeMatch(sig, expectedSig)) return null;
   try {
-    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8')) as {
-      role?: 'OWNER' | 'STAFF';
-      staffId?: string | null;
-      exp?: number;
-    };
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8')) as Partial<PortalSession>;
     if (!parsed.exp || parsed.exp < Date.now()) return null;
-    if (requiredRole && parsed.role !== requiredRole) return null;
-    if (parsed.role !== 'OWNER' && parsed.role !== 'STAFF') return null;
-    return { role: parsed.role, staffId: parsed.staffId || null };
+    if (
+      parsed.role !== 'OWNER' &&
+      parsed.role !== 'RECEPTION' &&
+      parsed.role !== 'STAFF' &&
+      parsed.role !== 'CUSTOMER'
+    ) {
+      return null;
+    }
+    return {
+      role: parsed.role,
+      staffId: parsed.staffId || null,
+      receptionId: parsed.receptionId || null,
+      customerId: parsed.customerId || null,
+      phone: parsed.phone || null,
+      exp: parsed.exp,
+    };
   } catch {
     return null;
   }
 }
 
-function requireOwnerAuth(req: Request, res: Response): boolean {
-  const session = verifyPortalToken(req, 'OWNER');
+function requireRoles(req: Request, res: Response, allowedRoles: UserRole[]): PortalSession | null {
+  const session = verifyPortalToken(req);
   if (!session) {
-    res.status(401).json({ error: 'Owner login required. Kripya Malik portal me dobara login karein.' });
+    res.status(401).json({ error: 'Login zaroori hai. Kripya apna registered number aur PIN se login karein.' });
+    return null;
+  }
+  if (!allowedRoles.includes(session.role)) {
+    res.status(403).json({ error: 'Is action ki permission aapke account ko nahi hai.' });
+    return null;
+  }
+  return session;
+}
+
+function recordFailedLoginAttempt(lockKey: string, now: number): void {
+  const current = failedPinAttempts.get(lockKey);
+  const prev = current && current.lockedUntil <= now ? current.count : 0;
+  const nextCount = prev + 1;
+  failedPinAttempts.set(lockKey, {
+    count: nextCount >= 5 ? 0 : nextCount,
+    lockedUntil: nextCount >= 5 ? now + 5 * 60 * 1000 : 0,
+  });
+}
+
+function checkLoginLock(lockKey: string, res: Response): boolean {
+  const now = Date.now();
+  const attemptState = failedPinAttempts.get(lockKey);
+  if (attemptState && attemptState.lockedUntil > now) {
+    const waitMins = Math.max(1, Math.ceil((attemptState.lockedUntil - now) / 60000));
+    res.status(429).json({
+      verified: false,
+      error: `Bahut baar galat koshish hui. ${waitMins} minute baad dobara try karein.`,
+    });
     return false;
   }
   return true;
@@ -472,7 +587,7 @@ interface OtpRecord {
   code: string;
   expiresAt: number;
   attempts: number;
-  verifiedToken?: string;
+  smsSent: boolean;
 }
 const otpStore = new Map<string, OtpRecord>();
 const verifiedTokens = new Map<string, { phone: string; expiresAt: number }>();
@@ -603,11 +718,66 @@ async function hydrateOrSeedSupabaseOnStartup(): Promise<void> {
     if (historyRes.data) db.serviceHistory = historyRes.data as CustomerServiceHistory[];
     if (notificationsRes.data) db.notifications = notificationsRes.data as NotificationItem[];
 
+    // Try hydrating salon_auth_state if configured in Supabase
+    let hydratedAuth = false;
+    try {
+      const authRes = await supabaseAdmin
+        .from('salon_auth_state')
+        .select('*')
+        .eq('salon_id', salonRow.id)
+        .limit(1);
+      if (!authRes.error && authRes.data && authRes.data[0]) {
+        const row = authRes.data[0] as {
+          reception_accounts?: ReceptionAccount[];
+          security_pins?: SecurityPinsStore;
+        };
+        if (Array.isArray(row.reception_accounts)) {
+          db.receptionAccounts = row.reception_accounts;
+        }
+        if (row.security_pins && row.security_pins.ownerPinHash) {
+          db.securityPins = {
+            ...db.securityPins,
+            ...row.security_pins,
+          };
+          hydratedAuth = true;
+        }
+      }
+    } catch {
+      // Optional table
+    }
+
+    // Preserve continuity for an already-seeded existing salon whose local file was cleared
+    if (!hydratedAuth && !db.securityPins.ownerPinHash) {
+      db.securityPins.ownerClaimed = true;
+      db.securityPins.ownerPinHash = hashPin('1234');
+      db.securityPins.isDefaultOwnerPin = true;
+    } else if (db.securityPins.ownerPinHash) {
+      db.securityPins.ownerClaimed = true;
+    }
+
     saveDatabase();
     console.log(`[Supabase Startup] Hydrated live data from Supabase (${db.salon.name}).`);
   } catch (err) {
     console.warn('[Supabase Startup] Hydration fallback to local replica:', err);
   }
+}
+
+function isAllowedCorsOrigin(origin: string, reqHost?: string): boolean {
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;
+  if (origin === 'capacitor://localhost') return true;
+  try {
+    const parsed = new URL(origin);
+    if (reqHost && parsed.host === reqHost) return true;
+    if (parsed.hostname.endsWith('.run.app')) return true;
+    const extraAllowed = (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (extraAllowed.includes(origin)) return true;
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 async function startServer() {
@@ -621,7 +791,7 @@ async function startServer() {
   app.set('trust proxy', true);
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin) {
+    if (origin && isAllowedCorsOrigin(origin, req.headers.host)) {
       res.header('Access-Control-Allow-Origin', origin);
       res.header('Vary', 'Origin');
     }
@@ -633,7 +803,7 @@ async function startServer() {
     }
     next();
   });
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '4mb' }));
   app.use('/uploads', express.static(UPLOADS_DIR));
 
   // Realtime SSE endpoint
@@ -649,8 +819,9 @@ async function startServer() {
     });
   });
 
-  // Get SQL Schema for Supabase SQL Editor
-  app.get('/api/supabase-schema', (_req: Request, res: Response) => {
+  // Get SQL Schema for Supabase SQL Editor (Owner only)
+  app.get('/api/supabase-schema', (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
     try {
       const sql = fs.existsSync(SCHEMA_FILE) ? fs.readFileSync(SCHEMA_FILE, 'utf-8') : '';
       res.json({ sql, supabaseConnected: isSupabaseConfigured });
@@ -659,19 +830,19 @@ async function startServer() {
     }
   });
 
-  // Test Supabase SQL Connection & Sync Local Relational Store to Supabase PostgreSQL
-  app.post('/api/supabase/test-and-sync', async (_req: Request, res: Response) => {
+  // Test Supabase SQL Connection & Sync Local Relational Store to Supabase PostgreSQL (Owner only)
+  app.post('/api/supabase/test-and-sync', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
     if (!isSupabaseConfigured || !supabaseAdmin) {
       res.status(400).json({
         connected: false,
         error:
-          'Supabase environment variables (SUPABASE_URL & SUPABASE_SERVICE_ROLE_KEY) are not configured yet in AI Studio Secrets.',
+          'Supabase environment variables (SUPABASE_URL & SUPABASE_SERVICE_ROLE_KEY) are not configured yet.',
       });
       return;
     }
 
     try {
-      // 1. Verify schema exists in Supabase by probing salons & salon_settings
       const probe = await supabaseAdmin.from('salons').select('id').limit(1);
       if (probe.error) {
         res.status(400).json({
@@ -682,8 +853,8 @@ async function startServer() {
         return;
       }
 
-      // 2. Sync tables in dependency order
       const { syncedCounts, warnings } = await syncAllTablesToSupabase();
+      await syncAuthStateToSupabase();
 
       res.json({
         connected: true,
@@ -702,9 +873,12 @@ async function startServer() {
     }
   });
 
-  // Bootstrap endpoint: loads all 16 tables with joined booking services
-  app.get('/api/bootstrap', async (_req: Request, res: Response) => {
-    const bookingsWithServices = db.bookings.map((b) => ({
+  // Role-Scoped Zero-Leak Bootstrap Endpoint
+  app.get('/api/bootstrap', async (req: Request, res: Response) => {
+    const session = verifyPortalToken(req);
+    const authRole: UserRole | 'NONE' = session ? session.role : 'NONE';
+
+    const bookingsWithServices: Booking[] = db.bookings.map((b) => ({
       ...b,
       reference_code:
         b.reference_code ||
@@ -712,243 +886,183 @@ async function startServer() {
       services: db.bookingServices.filter((bs) => bs.booking_id === b.id),
     }));
 
-    res.json({
+    const basePayload = {
       supabaseConnected: isSupabaseConfigured,
       supabaseUrlConfigured: Boolean(SUPABASE_URL),
-      storageMode: isSupabaseConfigured ? 'SUPABASE_POSTGRES' : 'LOCAL_POSTGRES_REPLICA',
+      storageMode: (isSupabaseConfigured ? 'SUPABASE_POSTGRES' : 'LOCAL_POSTGRES_REPLICA') as
+        | 'SUPABASE_POSTGRES'
+        | 'LOCAL_POSTGRES_REPLICA',
+      authRole,
+      needsOwnerSetup: !db.securityPins.ownerClaimed,
+      isDefaultOwnerPin: session?.role === 'OWNER' ? Boolean(db.securityPins.isDefaultOwnerPin) : false,
       salon: db.salon,
       settings: db.settings,
-      showcase: db.showcase || createDefaultShowcase(),
-      reviews: db.reviews || [],
-      staff: db.staff,
       services: db.services,
-      customers: db.customers,
       timeSlots: db.timeSlots,
-      bookings: bookingsWithServices,
-      payments: db.payments,
-      customerDues: db.customerDues,
-      expenses: db.expenses,
-      commissions: db.commissions,
-      attendance: db.attendance,
-      serviceHistory: db.serviceHistory,
-      notifications: db.notifications,
+    };
+
+    if (session?.role === 'OWNER') {
+      res.json({
+        ...basePayload,
+        staff: db.staff.map((s) => ({
+          ...s,
+          has_pin: Boolean(db.securityPins.staffPinHashes[s.id]),
+        })),
+        receptionAccounts: db.receptionAccounts.map((r) => ({
+          ...r,
+          has_pin: Boolean(db.securityPins.receptionPinHashes[r.id]),
+        })),
+        customers: db.customers.map((c) => ({
+          ...c,
+          is_registered: Boolean(db.securityPins.customerPinHashes[c.id]),
+        })),
+        bookings: bookingsWithServices,
+        payments: db.payments,
+        customerDues: db.customerDues,
+        expenses: db.expenses,
+        commissions: db.commissions,
+        attendance: db.attendance,
+        serviceHistory: db.serviceHistory,
+        notifications: db.notifications,
+      });
+      return;
+    }
+
+    if (session?.role === 'RECEPTION') {
+      res.json({
+        ...basePayload,
+        staff: db.staff.map((s) => ({ ...s, commission_pct: 0 })),
+        receptionAccounts: [],
+        customers: db.customers.map((c) => ({
+          ...c,
+          is_registered: Boolean(db.securityPins.customerPinHashes[c.id]),
+        })),
+        bookings: bookingsWithServices,
+        payments: db.payments,
+        customerDues: db.customerDues,
+        expenses: [],
+        commissions: [],
+        attendance: db.attendance,
+        serviceHistory: db.serviceHistory,
+        notifications: db.notifications.filter(
+          (n) => n.recipient_role === 'OWNER' || n.recipient_role === 'RECEPTION'
+        ),
+      });
+      return;
+    }
+
+    if (session?.role === 'STAFF' && session.staffId) {
+      const todayStr = getTodayDateString();
+      res.json({
+        ...basePayload,
+        staff: db.staff
+          .filter((s) => s.is_active)
+          .map((s) => ({
+            ...s,
+            commission_pct: s.id === session.staffId ? s.commission_pct : 0,
+          })),
+        receptionAccounts: [],
+        customers: db.customers.map((c) => ({
+          ...c,
+          total_spent: 0,
+          outstanding_due: 0,
+        })),
+        bookings: bookingsWithServices.filter(
+          (b) => b.barber_id === session.staffId || b.booking_date === todayStr
+        ),
+        payments: [],
+        customerDues: [],
+        expenses: [],
+        commissions: db.commissions.filter((c) => c.staff_id === session.staffId),
+        attendance: db.attendance.filter((a) => a.staff_id === session.staffId),
+        serviceHistory: db.serviceHistory,
+        notifications: db.notifications.filter(
+          (n) => n.recipient_role === 'STAFF' && n.recipient_phone === session.phone
+        ),
+      });
+      return;
+    }
+
+    if (session?.role === 'CUSTOMER' && session.phone) {
+      const myPhone = normalizePhone10(session.phone);
+      const myCustomer = db.customers.find((c) => normalizePhone10(c.phone) === myPhone);
+      const scopedBookings: Booking[] = bookingsWithServices.map((b) => {
+        const isMine = normalizePhone10(b.customer_phone) === myPhone;
+        if (isMine) return b;
+        return {
+          ...b,
+          customer_name: 'Booked',
+          customer_phone: '',
+          notes: '',
+          total_amount: 0,
+          services: [],
+          reference_code: undefined,
+        };
+      });
+
+      res.json({
+        ...basePayload,
+        staff: db.staff
+          .filter((s) => s.is_active)
+          .map((s) => ({ ...s, commission_pct: 0 })),
+        receptionAccounts: [],
+        customers: myCustomer ? [{ ...myCustomer, is_registered: true }] : [],
+        bookings: scopedBookings,
+        payments: [],
+        customerDues: [],
+        expenses: [],
+        commissions: [],
+        attendance: [],
+        serviceHistory: myCustomer
+          ? db.serviceHistory.filter((h) => h.customer_id === myCustomer.id)
+          : [],
+        notifications: db.notifications.filter(
+          (n) => n.recipient_role === 'CUSTOMER' && normalizePhone10(n.recipient_phone) === myPhone
+        ),
+      });
+      return;
+    }
+
+    // Unauthenticated public visitor: ZERO PII, ZERO financial metrics, anonymized queue slots only
+    const anonymizedBookings: Booking[] = bookingsWithServices
+      .filter((b) => b.status !== 'CANCELLED')
+      .map((b) => ({
+        ...b,
+        customer_name: 'Booked',
+        customer_phone: '',
+        notes: '',
+        total_amount: 0,
+        services: [],
+        reference_code: undefined,
+      }));
+
+    res.json({
+      ...basePayload,
+      staff: db.staff
+        .filter((s) => s.is_active)
+        .map((s) => ({ ...s, commission_pct: 0 })),
+      receptionAccounts: [],
+      customers: [],
+      bookings: anonymizedBookings,
+      payments: [],
+      customerDues: [],
+      expenses: [],
+      commissions: [],
+      attendance: [],
+      serviceHistory: [],
+      notifications: [],
     });
-  });
-
-  // 0. Owner Home Banner, Multi-Image Slides, Highlight Texts, Ticker & Offers Management
-  app.post('/api/showcase/upload-image', (req: Request, res: Response) => {
-    const dataUrl = String(req.body?.data_url || '');
-    const slotIndexRaw = req.body?.slot_index;
-    const mode = req.body?.mode === 'append' ? 'append' : 'replace';
-    const match = dataUrl.match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/i);
-    if (!match) {
-      res.status(400).json({ error: 'Please select a valid PNG, JPG, or WEBP image.' });
-      return;
-    }
-    const ext = match[1].toLowerCase() === 'jpeg' ? 'jpg' : match[1].toLowerCase();
-    const buffer = Buffer.from(match[2], 'base64');
-    if (buffer.length > 6 * 1024 * 1024) {
-      res.status(400).json({ error: 'Image size must be under 6 MB.' });
-      return;
-    }
-    if (!fs.existsSync(UPLOADS_DIR)) {
-      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-    }
-    const filename = `hero_${Date.now()}.${ext}`;
-    fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
-    const imageUrl = `/uploads/${filename}`;
-    if (!db.showcase) db.showcase = createDefaultShowcase();
-    const existingSlides = Array.isArray(db.showcase.hero_images)
-      ? [...db.showcase.hero_images].filter(Boolean)
-      : [db.showcase.hero_image_url || DEFAULT_HERO_IMAGE];
-
-    if (typeof slotIndexRaw === 'number' && slotIndexRaw >= 0 && slotIndexRaw < 4) {
-      existingSlides[slotIndexRaw] = imageUrl;
-      db.showcase.hero_images = existingSlides.filter(Boolean).slice(0, 4);
-    } else if (mode === 'append') {
-      db.showcase.hero_images = [...existingSlides, imageUrl].slice(0, 4);
-    } else {
-      db.showcase.hero_images = [imageUrl, ...existingSlides.slice(1)].slice(0, 4);
-    }
-    db.showcase.hero_image_url = db.showcase.hero_images[0] || imageUrl;
-    saveDatabase();
-    broadcastRealtimeUpdate('SHOWCASE_UPDATED');
-    res.json({ image_url: imageUrl, showcase: db.showcase });
-  });
-
-  app.put('/api/showcase', (req: Request, res: Response) => {
-    if (!db.showcase) db.showcase = createDefaultShowcase();
-    const {
-      hero_image_url,
-      hero_images,
-      hero_badge,
-      hero_title,
-      hero_subtitle,
-      hero_highlights,
-      ticker_enabled,
-      ticker_items,
-      footer_tagline,
-      developer_credit,
-    } = req.body;
-
-    if (Array.isArray(hero_images)) {
-      const cleaned = hero_images
-        .map((u: unknown) => String(u || '').trim())
-        .filter(Boolean)
-        .slice(0, 4);
-      db.showcase.hero_images = cleaned.length > 0 ? cleaned : [DEFAULT_HERO_IMAGE];
-      db.showcase.hero_image_url = db.showcase.hero_images[0];
-    } else if (hero_image_url !== undefined) {
-      const firstUrl = String(hero_image_url).trim() || DEFAULT_HERO_IMAGE;
-      db.showcase.hero_image_url = firstUrl;
-      const existingSlides = Array.isArray(db.showcase.hero_images)
-        ? [...db.showcase.hero_images]
-        : [];
-      db.showcase.hero_images = [firstUrl, ...existingSlides.slice(1)].filter(Boolean).slice(0, 4);
-    }
-    if (hero_badge !== undefined) db.showcase.hero_badge = String(hero_badge).trim();
-    if (hero_title !== undefined) db.showcase.hero_title = String(hero_title).trim();
-    if (hero_subtitle !== undefined) db.showcase.hero_subtitle = String(hero_subtitle).trim();
-    if (Array.isArray(hero_highlights)) db.showcase.hero_highlights = hero_highlights;
-    if (ticker_enabled !== undefined) db.showcase.ticker_enabled = Boolean(ticker_enabled);
-    if (Array.isArray(ticker_items)) db.showcase.ticker_items = ticker_items;
-    if (footer_tagline !== undefined) db.showcase.footer_tagline = String(footer_tagline).trim();
-    if (developer_credit !== undefined) {
-      db.showcase.developer_credit = String(developer_credit).trim() || 'Mirza Saif';
-    }
-
-    saveDatabase();
-    broadcastRealtimeUpdate('SHOWCASE_UPDATED');
-    res.json({ showcase: db.showcase });
-  });
-
-  app.post('/api/offers', (req: Request, res: Response) => {
-    if (!db.showcase) db.showcase = createDefaultShowcase();
-    const { title, badge, description, valid_until, show_popup } = req.body;
-    if (!title || !String(title).trim()) {
-      res.status(400).json({ error: 'Offer title is required.' });
-      return;
-    }
-    const offer: SalonOffer = {
-      id: crypto.randomUUID(),
-      title: String(title).trim(),
-      badge: String(badge || 'SPECIAL OFFER').trim(),
-      description: String(description || '').trim(),
-      valid_until: valid_until ? String(valid_until).trim() : '',
-      show_popup: show_popup !== undefined ? Boolean(show_popup) : true,
-      is_active: true,
-      created_at: new Date().toISOString(),
-    };
-    db.showcase.offers.unshift(offer);
-    saveDatabase();
-    broadcastRealtimeUpdate('SHOWCASE_UPDATED');
-    res.status(201).json({ offer, showcase: db.showcase });
-  });
-
-  app.put('/api/offers/:id', (req: Request, res: Response) => {
-    if (!db.showcase) db.showcase = createDefaultShowcase();
-    const offer = db.showcase.offers.find((o) => o.id === req.params.id);
-    if (!offer) {
-      res.status(404).json({ error: 'Offer not found.' });
-      return;
-    }
-    const { title, badge, description, valid_until, show_popup, is_active } = req.body;
-    if (title !== undefined) offer.title = String(title).trim();
-    if (badge !== undefined) offer.badge = String(badge).trim();
-    if (description !== undefined) offer.description = String(description).trim();
-    if (valid_until !== undefined) offer.valid_until = String(valid_until).trim();
-    if (show_popup !== undefined) offer.show_popup = Boolean(show_popup);
-    if (is_active !== undefined) offer.is_active = Boolean(is_active);
-    saveDatabase();
-    broadcastRealtimeUpdate('SHOWCASE_UPDATED');
-    res.json({ offer, showcase: db.showcase });
-  });
-
-  app.delete('/api/offers/:id', (req: Request, res: Response) => {
-    if (!db.showcase) db.showcase = createDefaultShowcase();
-    const idx = db.showcase.offers.findIndex((o) => o.id === req.params.id);
-    if (idx === -1) {
-      res.status(404).json({ error: 'Offer not found.' });
-      return;
-    }
-    db.showcase.offers.splice(idx, 1);
-    saveDatabase();
-    broadcastRealtimeUpdate('SHOWCASE_UPDATED');
-    res.json({ deleted: true, showcase: db.showcase });
-  });
-
-  // 0B. Customer Reviews (Customer Submit + Public View + Owner Edit/Delete)
-  app.post('/api/reviews', (req: Request, res: Response) => {
-    const { customer_name, rating, comment, service_name } = req.body;
-    const cleanName = String(customer_name || '').trim();
-    const cleanComment = String(comment || '').trim();
-    const numRating = Math.min(5, Math.max(1, Math.round(Number(rating) || 5)));
-
-    if (cleanName.length < 2 || cleanComment.length < 2) {
-      res.status(400).json({ error: 'Name and review text are required.' });
-      return;
-    }
-
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!checkRateLimit(`review_ip:${clientIp}`, 6, 15 * 60 * 1000)) {
-      res.status(429).json({ error: 'Too many reviews submitted. Please wait a few minutes.' });
-      return;
-    }
-
-    if (!Array.isArray(db.reviews)) db.reviews = [];
-    const now = new Date().toISOString();
-    const review: SalonReview = {
-      id: crypto.randomUUID(),
-      customer_name: cleanName,
-      rating: numRating,
-      comment: cleanComment,
-      service_name: service_name ? String(service_name).trim() : '',
-      is_visible: true,
-      created_at: now,
-      updated_at: now,
-    };
-    db.reviews.unshift(review);
-    saveDatabase();
-    broadcastRealtimeUpdate('REVIEW_UPDATED');
-    res.status(201).json({ review });
-  });
-
-  app.put('/api/reviews/:id', (req: Request, res: Response) => {
-    if (!Array.isArray(db.reviews)) db.reviews = [];
-    const review = db.reviews.find((r) => r.id === req.params.id);
-    if (!review) {
-      res.status(404).json({ error: 'Review not found.' });
-      return;
-    }
-    const { customer_name, rating, comment, service_name, is_visible } = req.body;
-    if (customer_name !== undefined) review.customer_name = String(customer_name).trim() || review.customer_name;
-    if (rating !== undefined) review.rating = Math.min(5, Math.max(1, Math.round(Number(rating) || 5)));
-    if (comment !== undefined) review.comment = String(comment).trim();
-    if (service_name !== undefined) review.service_name = String(service_name).trim();
-    if (is_visible !== undefined) review.is_visible = Boolean(is_visible);
-    review.updated_at = new Date().toISOString();
-
-    saveDatabase();
-    broadcastRealtimeUpdate('REVIEW_UPDATED');
-    res.json({ review });
-  });
-
-  app.delete('/api/reviews/:id', (req: Request, res: Response) => {
-    if (!Array.isArray(db.reviews)) db.reviews = [];
-    const idx = db.reviews.findIndex((r) => r.id === req.params.id);
-    if (idx === -1) {
-      res.status(404).json({ error: 'Review not found.' });
-      return;
-    }
-    db.reviews.splice(idx, 1);
-    saveDatabase();
-    broadcastRealtimeUpdate('REVIEW_UPDATED');
-    res.json({ deleted: true });
   });
 
   // 1. Update Owner / Staff Live Availability Status
   app.patch('/api/staff/:id/availability', async (req: Request, res: Response) => {
+    const session = requireRoles(req, res, ['OWNER', 'RECEPTION', 'STAFF']);
+    if (!session) return;
     const { id } = req.params;
+    if (session.role === 'STAFF' && session.staffId !== id) {
+      res.status(403).json({ error: 'Aap sirf apni chair ka status badal sakte hain.' });
+      return;
+    }
     const { availability_status } = req.body as { availability_status: AvailabilityStatus };
     const validStatuses: AvailabilityStatus[] = ['Available', 'Busy', 'Break', 'Not Available'];
     if (!validStatuses.includes(availability_status)) {
@@ -968,22 +1082,36 @@ async function startServer() {
     if (member.is_owner) {
       db.settings.owner_availability = availability_status;
       db.settings.updated_at = member.updated_at;
-      await syncTableRowToSupabase('salon_settings', db.settings as unknown as Record<string, unknown>);
+      await syncTableRowToSupabase('salon_settings', db.settings as unknown as Record<string, unknown>, 'salon_id');
     }
 
     saveDatabase();
     await syncTableRowToSupabase('staff', member as unknown as Record<string, unknown>);
-    broadcastRealtimeUpdate('AVAILABILITY_UPDATED', { staffId: id, availability_status });
+    broadcastRealtimeUpdate('AVAILABILITY_UPDATED');
     res.json({ staff: member, settings: db.settings });
   });
 
-  // 2. Staff Management: Add, Edit, Delete/Deactivate Staff (Owner protected)
+  // 2. Staff Management: Add, Edit, Delete/Deactivate Staff + Individual Staff PIN (Owner protected)
   app.post('/api/staff', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
-    const { name, phone, specialty, commission_pct, is_owner } = req.body;
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const { name, phone, specialty, commission_pct, is_owner, pin } = req.body;
     const cleanPhone = normalizePhone10(phone);
-    if (!name || cleanPhone.length !== 10) {
-      res.status(400).json({ error: 'Staff name and 10-digit mobile number are required.' });
+    const cleanPin = String(pin || '').trim();
+    if (!name || String(name).trim().length < 2) {
+      res.status(400).json({ error: 'Staff ka sahi naam daalein.' });
+      return;
+    }
+    if (!isValidIndianMobile(cleanPhone)) {
+      res.status(400).json({ error: 'Valid 10-digit Indian mobile number (6-9 se shuru) daalein.' });
+      return;
+    }
+    if (!isValidPin(cleanPin)) {
+      res.status(400).json({ error: 'Staff login ke liye 4 se 6 digit ka Secret PIN set karein.' });
+      return;
+    }
+    const duplicate = db.staff.find((s) => s.is_active && normalizePhone10(s.phone) === cleanPhone);
+    if (duplicate) {
+      res.status(409).json({ error: `Yeh mobile number pehle se ${duplicate.name} ke liye registered hai.` });
       return;
     }
 
@@ -1004,14 +1132,16 @@ async function startServer() {
     };
 
     db.staff.push(newStaff);
+    db.securityPins.staffPinHashes[newStaff.id] = hashPin(cleanPin);
     saveDatabase();
     await syncTableRowToSupabase('staff', newStaff as unknown as Record<string, unknown>);
+    await syncAuthStateToSupabase();
     broadcastRealtimeUpdate('STAFF_UPDATED');
-    res.status(201).json({ staff: newStaff });
+    res.status(201).json({ staff: { ...newStaff, has_pin: true } });
   });
 
   app.put('/api/staff/:id', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { id } = req.params;
     const member = db.staff.find((s) => s.id === id);
     if (!member) {
@@ -1019,12 +1149,19 @@ async function startServer() {
       return;
     }
 
-    const { name, phone, specialty, commission_pct, is_active, availability_status } = req.body;
+    const { name, phone, specialty, commission_pct, is_active, availability_status, pin } = req.body;
     if (name !== undefined && String(name).trim()) member.name = String(name).trim();
     if (phone !== undefined) {
       const cleanPhone = normalizePhone10(phone);
-      if (cleanPhone.length !== 10) {
-        res.status(400).json({ error: 'Valid 10-digit mobile number is required.' });
+      if (!isValidIndianMobile(cleanPhone)) {
+        res.status(400).json({ error: 'Valid 10-digit Indian mobile number (6-9 se shuru) daalein.' });
+        return;
+      }
+      const duplicate = db.staff.find(
+        (s) => s.id !== id && s.is_active && normalizePhone10(s.phone) === cleanPhone
+      );
+      if (duplicate) {
+        res.status(409).json({ error: `Yeh mobile number pehle se ${duplicate.name} ke paas hai.` });
         return;
       }
       member.phone = cleanPhone;
@@ -1033,6 +1170,14 @@ async function startServer() {
         db.salon.updated_at = new Date().toISOString();
         await syncTableRowToSupabase('salons', db.salon as unknown as Record<string, unknown>);
       }
+    }
+    if (pin !== undefined && String(pin).trim() !== '') {
+      const cleanPin = String(pin).trim();
+      if (!isValidPin(cleanPin)) {
+        res.status(400).json({ error: 'Staff PIN 4 se 6 digits ka number hona chahiye.' });
+        return;
+      }
+      db.securityPins.staffPinHashes[member.id] = hashPin(cleanPin);
     }
     if (specialty !== undefined) member.specialty = String(specialty).trim();
     if (commission_pct !== undefined) {
@@ -1045,7 +1190,7 @@ async function startServer() {
     }
     if (is_active !== undefined) {
       if (member.is_owner && !is_active) {
-        res.status(400).json({ error: 'Salon Owner account cannot be deactivated. Use Availability Status instead.' });
+        res.status(400).json({ error: 'Salon Owner account cannot be deactivated.' });
         return;
       }
       member.is_active = Boolean(is_active);
@@ -1060,12 +1205,13 @@ async function startServer() {
 
     saveDatabase();
     await syncTableRowToSupabase('staff', member as unknown as Record<string, unknown>);
+    await syncAuthStateToSupabase();
     broadcastRealtimeUpdate('STAFF_UPDATED');
-    res.json({ staff: member });
+    res.json({ staff: { ...member, has_pin: Boolean(db.securityPins.staffPinHashes[member.id]) } });
   });
 
   app.delete('/api/staff/:id', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { id } = req.params;
     const idx = db.staff.findIndex((s) => s.id === id);
     if (idx === -1) {
@@ -1083,13 +1229,16 @@ async function startServer() {
     if (hasHistory) {
       member.is_active = false;
       member.updated_at = new Date().toISOString();
+      delete db.securityPins.staffPinHashes[id];
       saveDatabase();
       await syncTableRowToSupabase('staff', member as unknown as Record<string, unknown>);
+      await syncAuthStateToSupabase();
       broadcastRealtimeUpdate('STAFF_UPDATED');
       res.json({ deactivated: true, message: 'Staff history safe rakhne ke liye deactivate kar diya gaya.' });
       return;
     }
     db.staff.splice(idx, 1);
+    delete db.securityPins.staffPinHashes[id];
     saveDatabase();
     if (supabaseAdmin) {
       try {
@@ -1098,13 +1247,129 @@ async function startServer() {
         // Ignore if linked
       }
     }
+    await syncAuthStateToSupabase();
     broadcastRealtimeUpdate('STAFF_UPDATED');
+    res.json({ deleted: true });
+  });
+
+  // 2B. Reception Counter Login Accounts (Created & Managed Exclusively by Malik/Owner)
+  app.post('/api/reception-accounts', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const cleanName = String(req.body?.name || '').trim();
+    const cleanPhone = normalizePhone10(req.body?.phone);
+    const cleanPin = String(req.body?.pin || '').trim();
+
+    if (cleanName.length < 2) {
+      res.status(400).json({ error: 'Receptionist ka naam daalein (kam se kam 2 akshar).' });
+      return;
+    }
+    if (!isValidIndianMobile(cleanPhone)) {
+      res.status(400).json({ error: 'Valid 10-digit Indian mobile number (6-9 se shuru) daalein.' });
+      return;
+    }
+    if (!isValidPin(cleanPin)) {
+      res.status(400).json({ error: 'Reception login ke liye 4 se 6 digit ka Secret PIN set karein.' });
+      return;
+    }
+    const duplicate = db.receptionAccounts.find(
+      (r) => normalizePhone10(r.phone) === cleanPhone
+    );
+    if (duplicate) {
+      res.status(409).json({ error: `Yeh mobile number pehle se Reception account (${duplicate.name}) me hai.` });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const account: ReceptionAccount = {
+      id: crypto.randomUUID(),
+      salon_id: db.salon.id,
+      name: cleanName,
+      phone: cleanPhone,
+      is_active: true,
+      created_at: now,
+      updated_at: now,
+    };
+    db.receptionAccounts.push(account);
+    db.securityPins.receptionPinHashes[account.id] = hashPin(cleanPin);
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('RECEPTION_UPDATED');
+    res.status(201).json({ receptionAccount: { ...account, has_pin: true } });
+  });
+
+  app.put('/api/reception-accounts/:id', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const acc = db.receptionAccounts.find((r) => r.id === req.params.id);
+    if (!acc) {
+      res.status(404).json({ error: 'Reception account not found.' });
+      return;
+    }
+    const { name, phone, pin, is_active } = req.body;
+    if (name !== undefined && String(name).trim().length >= 2) {
+      acc.name = String(name).trim();
+    }
+    if (phone !== undefined) {
+      const cleanPhone = normalizePhone10(phone);
+      if (!isValidIndianMobile(cleanPhone)) {
+        res.status(400).json({ error: 'Valid 10-digit Indian mobile number daalein.' });
+        return;
+      }
+      const dup = db.receptionAccounts.find(
+        (r) => r.id !== acc.id && normalizePhone10(r.phone) === cleanPhone
+      );
+      if (dup) {
+        res.status(409).json({ error: `Yeh mobile number pehle se ${dup.name} ke paas hai.` });
+        return;
+      }
+      acc.phone = cleanPhone;
+    }
+    if (pin !== undefined && String(pin).trim() !== '') {
+      const cleanPin = String(pin).trim();
+      if (!isValidPin(cleanPin)) {
+        res.status(400).json({ error: 'Reception PIN 4 se 6 digits ka hona chahiye.' });
+        return;
+      }
+      db.securityPins.receptionPinHashes[acc.id] = hashPin(cleanPin);
+    }
+    if (is_active !== undefined) {
+      acc.is_active = Boolean(is_active);
+    }
+    acc.updated_at = new Date().toISOString();
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('RECEPTION_UPDATED');
+    res.json({
+      receptionAccount: {
+        ...acc,
+        has_pin: Boolean(db.securityPins.receptionPinHashes[acc.id]),
+      },
+    });
+  });
+
+  app.delete('/api/reception-accounts/:id', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const idx = db.receptionAccounts.findIndex((r) => r.id === req.params.id);
+    if (idx === -1) {
+      res.status(404).json({ error: 'Reception account not found.' });
+      return;
+    }
+    const [removed] = db.receptionAccounts.splice(idx, 1);
+    delete db.securityPins.receptionPinHashes[removed.id];
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('RECEPTION_UPDATED');
     res.json({ deleted: true });
   });
 
   // 3. Attendance Management
   app.post('/api/attendance', async (req: Request, res: Response) => {
+    const session = requireRoles(req, res, ['OWNER', 'RECEPTION', 'STAFF']);
+    if (!session) return;
     const { staff_id, attendance_date, status, check_in_time, check_out_time } = req.body;
+    if (session.role === 'STAFF' && session.staffId !== staff_id) {
+      res.status(403).json({ error: 'Aap sirf apni attendance mark kar sakte hain.' });
+      return;
+    }
     const member = db.staff.find((s) => s.id === staff_id);
     if (!member) {
       res.status(404).json({ error: 'Staff member not found.' });
@@ -1138,7 +1403,7 @@ async function startServer() {
 
   // 4. Services Management: Add, Edit, Deactivate Services (Owner protected)
   app.post('/api/services', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { name, name_hi, category, price, duration_minutes } = req.body;
     if (!name || price === undefined || Number(price) < 0) {
       res.status(400).json({ error: 'Valid service name and price are required.' });
@@ -1165,7 +1430,7 @@ async function startServer() {
   });
 
   app.put('/api/services/:id', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { id } = req.params;
     const service = db.services.find((s) => s.id === id);
     if (!service) {
@@ -1188,7 +1453,7 @@ async function startServer() {
   });
 
   app.delete('/api/services/:id', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { id } = req.params;
     const idx = db.services.findIndex((s) => s.id === id);
     if (idx === -1) {
@@ -1218,89 +1483,189 @@ async function startServer() {
     res.json({ deleted: true });
   });
 
-  // 4A. Portal Phone + PIN Security (Registered Mobile Number + Secret PIN + Brute-Force Lockout)
+  // 4A. First-Time Commercial Owner Setup (only works before ownerClaimed = true)
+  app.post('/api/auth/setup-owner', async (req: Request, res: Response) => {
+    if (db.securityPins.ownerClaimed) {
+      res.status(403).json({ error: 'Salon Malik pehle se setup ho chuka hai. Registered mobile aur PIN se login karein.' });
+      return;
+    }
+    const salonName = String(req.body?.salonName || '').trim();
+    const ownerName = String(req.body?.ownerName || '').trim();
+    const cleanPhone = normalizePhone10(req.body?.phone);
+    const pin = String(req.body?.pin || '').trim();
+
+    if (salonName.length < 2 || ownerName.length < 2) {
+      res.status(400).json({ error: 'Salon ka naam aur Malik ka naam daalein.' });
+      return;
+    }
+    if (!isValidIndianMobile(cleanPhone)) {
+      res.status(400).json({ error: 'Valid 10-digit Indian mobile number (6-9 se shuru) daalein.' });
+      return;
+    }
+    if (!isValidPin(pin)) {
+      res.status(400).json({ error: '4 se 6 digit ka Secret PIN daalein.' });
+      return;
+    }
+    if (['1234', '0000', '1111', '2222', '9999'].includes(pin)) {
+      res.status(400).json({ error: 'Safety ke liye aasan PIN (jaise 1234/0000) na rakhein, apna alag PIN chunein.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    db.salon.name = salonName;
+    db.salon.phone = cleanPhone;
+    db.salon.updated_at = now;
+    db.settings.upi_merchant_name = salonName;
+    db.settings.updated_at = now;
+
+    const ownerStaff = db.staff.find((s) => s.is_owner);
+    if (ownerStaff) {
+      ownerStaff.name = ownerName;
+      ownerStaff.phone = cleanPhone;
+      ownerStaff.updated_at = now;
+      await syncTableRowToSupabase('staff', ownerStaff as unknown as Record<string, unknown>);
+    }
+
+    db.securityPins.ownerPinHash = hashPin(pin);
+    db.securityPins.ownerClaimed = true;
+    db.securityPins.isDefaultOwnerPin = false;
+
+    saveDatabase();
+    await syncTableRowToSupabase('salons', db.salon as unknown as Record<string, unknown>);
+    await syncTableRowToSupabase('salon_settings', db.settings as unknown as Record<string, unknown>, 'salon_id');
+    await syncAuthStateToSupabase();
+
+    const token = signPortalToken({
+      role: 'OWNER',
+      staffId: ownerStaff?.id || null,
+      receptionId: null,
+      customerId: null,
+      phone: cleanPhone,
+    });
+    res.status(201).json({ verified: true, role: 'OWNER', token });
+  });
+
+  // 4B. Strict Role-Separated Phone + PIN Login (OWNER, RECEPTION, STAFF)
   app.post('/api/auth/verify-pin', (req: Request, res: Response) => {
-    const role = req.body?.role === 'STAFF' ? 'STAFF' : 'OWNER';
+    const rawRole = String(req.body?.role || 'OWNER').toUpperCase();
+    const role: 'OWNER' | 'RECEPTION' | 'STAFF' =
+      rawRole === 'STAFF' ? 'STAFF' : rawRole === 'RECEPTION' ? 'RECEPTION' : 'OWNER';
     const pin = String(req.body?.pin || '').trim();
     const cleanPhone = normalizePhone10(req.body?.phone);
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
     const lockKey = `${clientIp}:${role}`;
     const now = Date.now();
 
-    const attemptState = failedPinAttempts.get(lockKey);
-    if (attemptState && attemptState.lockedUntil > now) {
-      const waitMins = Math.max(1, Math.ceil((attemptState.lockedUntil - now) / 60000));
-      res.status(429).json({
-        verified: false,
-        error: `Bahut baar galat koshish hui. ${waitMins} minute baad try karein.`,
-      });
-      return;
-    }
+    if (!checkLoginLock(lockKey, res)) return;
 
-    if (cleanPhone.length !== 10 || !/^\d{4,6}$/.test(pin)) {
+    if (!isValidIndianMobile(cleanPhone) || !isValidPin(pin)) {
       res.status(400).json({
         verified: false,
-        error: '10-digit registered mobile number aur 4-digit PIN zaroori hai.',
+        error: '10-digit registered Indian mobile number aur 4-6 digit PIN zaroori hai.',
       });
       return;
     }
 
-    const expectedOwnerPin = db.securityPins?.ownerPin || '1234';
-    const expectedStaffPin = db.securityPins?.staffPin || '0000';
+    if (!db.securityPins.ownerClaimed) {
+      res.status(403).json({
+        verified: false,
+        needsOwnerSetup: true,
+        error: 'Pehle Malik ka naya account setup karein.',
+      });
+      return;
+    }
 
     if (role === 'OWNER') {
       const ownerPhones = new Set<string>();
       const salonPhone10 = normalizePhone10(db.salon.phone);
-      if (salonPhone10.length === 10) ownerPhones.add(salonPhone10);
+      if (isValidIndianMobile(salonPhone10)) ownerPhones.add(salonPhone10);
       db.staff.forEach((s) => {
         if (s.is_active && s.is_owner) {
           const p = normalizePhone10(s.phone);
-          if (p.length === 10) ownerPhones.add(p);
+          if (isValidIndianMobile(p)) ownerPhones.add(p);
         }
       });
 
       const phoneOk = ownerPhones.has(cleanPhone);
-      const pinOk = constantTimeMatch(pin, expectedOwnerPin);
+      const pinOk = verifyPinHash(pin, db.securityPins.ownerPinHash);
       if (!phoneOk || !pinOk) {
-        const prev = attemptState && attemptState.lockedUntil <= now ? attemptState.count : 0;
-        const nextCount = prev + 1;
-        failedPinAttempts.set(lockKey, {
-          count: nextCount >= 5 ? 0 : nextCount,
-          lockedUntil: nextCount >= 5 ? now + 5 * 60 * 1000 : 0,
-        });
+        recordFailedLoginAttempt(lockKey, now);
         res.status(401).json({
           verified: false,
-          error: 'Registered Owner mobile number ya PIN galat hai.',
+          error: 'Malik ka registered mobile number ya PIN galat hai.',
         });
         return;
       }
 
       failedPinAttempts.delete(lockKey);
-      const token = signPortalToken('OWNER');
+      const ownerStaff = db.staff.find((s) => s.is_active && s.is_owner);
+      const token = signPortalToken({
+        role: 'OWNER',
+        staffId: ownerStaff?.id || null,
+        receptionId: null,
+        customerId: null,
+        phone: cleanPhone,
+      });
       res.json({ verified: true, role: 'OWNER', token });
       return;
     }
 
-    const matchedStaff = db.staff.find(
-      (s) => s.is_active && normalizePhone10(s.phone) === cleanPhone
-    );
-    const pinOk = constantTimeMatch(pin, expectedStaffPin);
-    if (!matchedStaff || !pinOk) {
-      const prev = attemptState && attemptState.lockedUntil <= now ? attemptState.count : 0;
-      const nextCount = prev + 1;
-      failedPinAttempts.set(lockKey, {
-        count: nextCount >= 5 ? 0 : nextCount,
-        lockedUntil: nextCount >= 5 ? now + 5 * 60 * 1000 : 0,
+    if (role === 'RECEPTION') {
+      const matchedReception = db.receptionAccounts.find(
+        (r) => r.is_active && normalizePhone10(r.phone) === cleanPhone
+      );
+      const storedHash = matchedReception
+        ? db.securityPins.receptionPinHashes[matchedReception.id] || ''
+        : '';
+      if (!matchedReception || !verifyPinHash(pin, storedHash)) {
+        recordFailedLoginAttempt(lockKey, now);
+        res.status(401).json({
+          verified: false,
+          error: 'Receptionist ka mobile number ya PIN galat hai. Malik → Staff tab se account banwayein.',
+        });
+        return;
+      }
+
+      failedPinAttempts.delete(lockKey);
+      const token = signPortalToken({
+        role: 'RECEPTION',
+        staffId: null,
+        receptionId: matchedReception.id,
+        customerId: null,
+        phone: cleanPhone,
       });
+      res.json({
+        verified: true,
+        role: 'RECEPTION',
+        receptionId: matchedReception.id,
+        receptionName: matchedReception.name,
+        token,
+      });
+      return;
+    }
+
+    // Strict STAFF login: non-owner active staff only + individual hashed PIN
+    const matchedStaff = db.staff.find(
+      (s) => s.is_active && !s.is_owner && normalizePhone10(s.phone) === cleanPhone
+    );
+    const staffHash = matchedStaff ? db.securityPins.staffPinHashes[matchedStaff.id] || '' : '';
+    if (!matchedStaff || !verifyPinHash(pin, staffHash)) {
+      recordFailedLoginAttempt(lockKey, now);
       res.status(401).json({
         verified: false,
-        error: 'Registered Staff mobile number ya PIN galat hai.',
+        error: 'Staff ka mobile number ya personal PIN galat hai.',
       });
       return;
     }
 
     failedPinAttempts.delete(lockKey);
-    const token = signPortalToken('STAFF', matchedStaff.id);
+    const token = signPortalToken({
+      role: 'STAFF',
+      staffId: matchedStaff.id,
+      receptionId: null,
+      customerId: null,
+      phone: cleanPhone,
+    });
     res.json({
       verified: true,
       role: 'STAFF',
@@ -1310,111 +1675,293 @@ async function startServer() {
     });
   });
 
-  app.put('/api/auth/pins', (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+  // Update Malik PIN (Owner only)
+  app.put('/api/auth/pins', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const rawOwnerPin = req.body?.ownerPin ?? req.body?.new_owner_pin;
-    const rawStaffPin = req.body?.staffPin ?? req.body?.new_staff_pin;
-
-    if (!db.securityPins) db.securityPins = { ownerPin: '1234', staffPin: '0000' };
-    let updatedAny = false;
-
-    if (rawOwnerPin !== undefined && String(rawOwnerPin).trim() !== '') {
-      const cleanOwner = String(rawOwnerPin).trim();
-      if (!/^\d{4,6}$/.test(cleanOwner)) {
-        res.status(400).json({ error: 'Owner PIN 4 se 6 digits ka number hona chahiye.' });
-        return;
-      }
-      db.securityPins.ownerPin = cleanOwner;
-      updatedAny = true;
+    const cleanOwner = String(rawOwnerPin || '').trim();
+    if (!isValidPin(cleanOwner)) {
+      res.status(400).json({ error: 'Malik PIN 4 se 6 digits ka number hona chahiye.' });
+      return;
     }
-
-    if (rawStaffPin !== undefined && String(rawStaffPin).trim() !== '') {
-      const cleanStaff = String(rawStaffPin).trim();
-      if (!/^\d{4,6}$/.test(cleanStaff)) {
-        res.status(400).json({ error: 'Staff PIN 4 se 6 digits ka number hona chahiye.' });
-        return;
-      }
-      db.securityPins.staffPin = cleanStaff;
-      updatedAny = true;
-    }
-
-    if (!updatedAny) {
-      res.status(400).json({ error: 'Kam se kam ek valid 4-digit PIN daalein.' });
+    if (['1234', '0000', '1111', '2222', '9999'].includes(cleanOwner)) {
+      res.status(400).json({ error: 'Safety ke liye aasan PIN (jaise 1234/0000) na rakhein.' });
       return;
     }
 
+    db.securityPins.ownerPinHash = hashPin(cleanOwner);
+    db.securityPins.isDefaultOwnerPin = false;
+    db.securityPins.ownerClaimed = true;
     saveDatabase();
+    await syncAuthStateToSupabase();
     res.json({ updated: true });
   });
 
-  // 4B. Customer Mobile OTP Request & Verification (with Rate Limiting)
+  // 4C. Customer Self-Registration, Login & PIN Management
+  app.post('/api/auth/customer/register', async (req: Request, res: Response) => {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(`cust_reg:${clientIp}`, 10, 15 * 60 * 1000)) {
+      res.status(429).json({ error: 'Bahut zyada koshish hui. Kuch der baad try karein.' });
+      return;
+    }
+
+    const cleanName = String(req.body?.name || '').trim();
+    const cleanPhone = normalizePhone10(req.body?.phone);
+    const cleanPin = String(req.body?.pin || '').trim();
+
+    if (cleanName.length < 2) {
+      res.status(400).json({ error: 'Apna sahi naam daalein (kam se kam 2 akshar).' });
+      return;
+    }
+    if (!isValidIndianMobile(cleanPhone)) {
+      res.status(400).json({ error: 'Valid 10-digit Indian mobile number (6-9 se shuru) daalein.' });
+      return;
+    }
+    if (!isValidPin(cleanPin)) {
+      res.status(400).json({ error: '4 se 6 digit ka Secret PIN banayein.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let customer = db.customers.find((c) => normalizePhone10(c.phone) === cleanPhone);
+    if (customer && db.securityPins.customerPinHashes[customer.id]) {
+      res.status(409).json({
+        error: 'Is mobile number par account pehle se bana hai. Kripya Login karein.',
+      });
+      return;
+    }
+
+    if (!customer) {
+      customer = {
+        id: crypto.randomUUID(),
+        salon_id: db.salon.id,
+        name: cleanName,
+        phone: cleanPhone,
+        haircut_preference: '',
+        special_notes: '',
+        total_visits: 0,
+        total_spent: 0,
+        outstanding_due: 0,
+        last_visit_date: null,
+        created_at: now,
+        updated_at: now,
+      };
+      db.customers.push(customer);
+    } else {
+      customer.name = cleanName;
+      customer.updated_at = now;
+    }
+
+    db.securityPins.customerPinHashes[customer.id] = hashPin(cleanPin);
+
+    const ownerNote: NotificationItem = {
+      id: crypto.randomUUID(),
+      salon_id: db.salon.id,
+      recipient_role: 'OWNER',
+      title: `Naya Customer Register · ${customer.name}`,
+      message: `${customer.name} (+91 ${cleanPhone}) ne Customer App par apna account banaya hai.`,
+      is_read: false,
+      created_at: now,
+    };
+    db.notifications.unshift(ownerNote);
+
+    saveDatabase();
+    await syncTableRowToSupabase('customers', customer as unknown as Record<string, unknown>, 'salon_id,phone');
+    await syncTableRowToSupabase('notifications', ownerNote as unknown as Record<string, unknown>);
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('CUSTOMER_UPDATED');
+
+    const token = signPortalToken({
+      role: 'CUSTOMER',
+      staffId: null,
+      receptionId: null,
+      customerId: customer.id,
+      phone: cleanPhone,
+    });
+    res.status(201).json({
+      verified: true,
+      role: 'CUSTOMER',
+      customer: { ...customer, is_registered: true },
+      token,
+    });
+  });
+
+  app.post('/api/auth/customer/login', (req: Request, res: Response) => {
+    const cleanPhone = normalizePhone10(req.body?.phone);
+    const cleanPin = String(req.body?.pin || '').trim();
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const lockKey = `${clientIp}:CUSTOMER:${cleanPhone}`;
+    const now = Date.now();
+
+    if (!checkLoginLock(lockKey, res)) return;
+
+    if (!isValidIndianMobile(cleanPhone) || !isValidPin(cleanPin)) {
+      res.status(400).json({
+        verified: false,
+        error: '10-digit Indian mobile number aur 4-6 digit PIN daalein.',
+      });
+      return;
+    }
+
+    const customer = db.customers.find((c) => normalizePhone10(c.phone) === cleanPhone);
+    if (!customer || !db.securityPins.customerPinHashes[customer.id]) {
+      recordFailedLoginAttempt(lockKey, now);
+      res.status(401).json({
+        verified: false,
+        needsRegister: true,
+        error: 'Is number ka account abhi nahi bana hai. "Naya Account Banayein" chunein.',
+      });
+      return;
+    }
+
+    if (!verifyPinHash(cleanPin, db.securityPins.customerPinHashes[customer.id])) {
+      recordFailedLoginAttempt(lockKey, now);
+      res.status(401).json({
+        verified: false,
+        error: 'Mobile number ya PIN galat hai.',
+      });
+      return;
+    }
+
+    failedPinAttempts.delete(lockKey);
+    const token = signPortalToken({
+      role: 'CUSTOMER',
+      staffId: null,
+      receptionId: null,
+      customerId: customer.id,
+      phone: cleanPhone,
+    });
+    res.json({
+      verified: true,
+      role: 'CUSTOMER',
+      customer: { ...customer, is_registered: true },
+      token,
+    });
+  });
+
+  app.put('/api/auth/customer/pin', async (req: Request, res: Response) => {
+    const session = requireRoles(req, res, ['CUSTOMER']);
+    if (!session || !session.customerId) return;
+    const currentPin = String(req.body?.current_pin || '').trim();
+    const newPin = String(req.body?.new_pin || '').trim();
+    if (!isValidPin(currentPin) || !isValidPin(newPin)) {
+      res.status(400).json({ error: 'Purana aur naya 4-6 digit PIN daalein.' });
+      return;
+    }
+    const storedHash = db.securityPins.customerPinHashes[session.customerId] || '';
+    if (!verifyPinHash(currentPin, storedHash)) {
+      res.status(401).json({ error: 'Purana PIN galat hai.' });
+      return;
+    }
+    db.securityPins.customerPinHashes[session.customerId] = hashPin(newPin);
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    res.json({ updated: true });
+  });
+
+  app.put('/api/customers/:id/pin', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const customer = db.customers.find((c) => c.id === req.params.id);
+    if (!customer) {
+      res.status(404).json({ error: 'Customer not found.' });
+      return;
+    }
+    const newPin = String(req.body?.pin || '').trim();
+    if (!isValidPin(newPin)) {
+      res.status(400).json({ error: 'Naya PIN 4 se 6 digits ka hona chahiye.' });
+      return;
+    }
+    db.securityPins.customerPinHashes[customer.id] = hashPin(newPin);
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('CUSTOMER_UPDATED');
+    res.json({ updated: true });
+  });
+
+  // 4D. Mobile OTP Request & Verification (Only dispatches via real SMS gateway; never returns secret codes in HTTP response)
   app.post('/api/otp/request', async (req: Request, res: Response) => {
-    const rawPhone = String(req.body?.phone || '').replace(/\D/g, '').slice(-10);
-    if (!/^[6-9]\d{9}$/.test(rawPhone)) {
-      res.status(400).json({ error: 'Please enter a valid 10-digit Indian mobile number.' });
+    const rawPhone = normalizePhone10(req.body?.phone);
+    if (!isValidIndianMobile(rawPhone)) {
+      res.status(400).json({ error: 'Valid 10-digit Indian mobile number daalein.' });
       return;
     }
 
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
     if (!checkRateLimit(`otp_ip:${clientIp}`, 10, 10 * 60 * 1000)) {
-      res.status(429).json({ error: 'Too many OTP requests from this device. Please wait 10 minutes.' });
+      res.status(429).json({ error: 'Too many OTP requests. 10 minute baad try karein.' });
       return;
     }
     if (!checkRateLimit(`otp_phone:${rawPhone}`, 5, 10 * 60 * 1000)) {
-      res.status(429).json({ error: 'Too many OTP requests for this number. Please try again in 10 minutes.' });
+      res.status(429).json({ error: 'Is number par bahut zyada OTP bheje ja chuke hain.' });
       return;
     }
 
-    const code = String(crypto.randomInt(100000, 999999));
-    otpStore.set(rawPhone, {
-      code,
-      expiresAt: Date.now() + 5 * 60 * 1000,
-      attempts: 0,
-    });
-
-    // If Supabase Phone Auth provider is configured, attempt Supabase OTP dispatch too
     let supabaseOtpSent = false;
     if (supabaseAdmin) {
       try {
         const { error } = await supabaseAdmin.auth.signInWithOtp({ phone: `+91${rawPhone}` });
         if (!error) supabaseOtpSent = true;
       } catch {
-        // SMS provider not configured on Supabase project; fall back to local verification code
+        // SMS provider not active
       }
     }
+
+    if (!supabaseOtpSent) {
+      res.status(503).json({
+        sent: false,
+        error: 'SMS OTP service abhi active nahi hai. Agar aap apna PIN bhool gaye hain to Salon Malik se reset karwayein.',
+      });
+      return;
+    }
+
+    otpStore.set(rawPhone, {
+      code: '',
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      attempts: 0,
+      smsSent: true,
+    });
 
     res.json({
       sent: true,
       expires_in_seconds: 300,
-      supabase_sms_dispatched: supabaseOtpSent,
-      // Returned only when SMS gateway is not active so the user can test OTP verification smoothly
-      verification_code_preview: supabaseOtpSent ? undefined : code,
+      supabase_sms_dispatched: true,
     });
   });
 
   app.post('/api/otp/verify', async (req: Request, res: Response) => {
-    const rawPhone = String(req.body?.phone || '').replace(/\D/g, '').slice(-10);
+    const rawPhone = normalizePhone10(req.body?.phone);
     const code = String(req.body?.otp || '').trim();
     const record = otpStore.get(rawPhone);
 
     if (!record) {
-      res.status(400).json({ error: 'No OTP requested for this number. Please request a new OTP.' });
+      res.status(400).json({ error: 'Pehle OTP request karein.' });
       return;
     }
     if (Date.now() > record.expiresAt) {
       otpStore.delete(rawPhone);
-      res.status(400).json({ error: 'OTP has expired. Please request a new OTP.' });
+      res.status(400).json({ error: 'OTP expire ho gaya hai.' });
       return;
     }
     if (record.attempts >= 5) {
       otpStore.delete(rawPhone);
-      res.status(429).json({ error: 'Too many invalid OTP attempts. Please request a new OTP.' });
+      res.status(429).json({ error: 'Galat OTP attempts zyada ho gaye.' });
       return;
     }
 
-    if (record.code !== code) {
+    if (!supabaseAdmin) {
+      res.status(503).json({ error: 'SMS OTP gateway available nahi hai.' });
+      return;
+    }
+
+    const { error } = await supabaseAdmin.auth.verifyOtp({
+      phone: `+91${rawPhone}`,
+      token: code,
+      type: 'sms',
+    });
+
+    if (error) {
       record.attempts += 1;
-      res.status(400).json({ error: `Invalid OTP code. ${5 - record.attempts} attempts remaining.` });
+      res.status(400).json({ error: `Galat OTP code. ${5 - record.attempts} koshish baaki hain.` });
       return;
     }
 
@@ -1425,7 +1972,7 @@ async function startServer() {
     });
     otpStore.delete(rawPhone);
 
-    const existingCustomer = db.customers.find((c) => c.phone === rawPhone);
+    const existingCustomer = db.customers.find((c) => normalizePhone10(c.phone) === rawPhone);
     res.json({
       verified: true,
       verification_token: verificationToken,
@@ -1435,8 +1982,10 @@ async function startServer() {
     });
   });
 
-  // 5. Atomic Booking Creation (Enforces Owner Booking Rule, Rate Limiting & Double-Booking Prevention)
+  // 5. Atomic Booking Creation (Authenticated CUSTOMER or OWNER/RECEPTION)
   app.post('/api/bookings', async (req: Request, res: Response) => {
+    const session = requireRoles(req, res, ['CUSTOMER', 'OWNER', 'RECEPTION']);
+    if (!session) return;
     if (bookingLock) {
       res.status(409).json({ error: 'Another booking transaction is in progress. Please retry in a moment.' });
       return;
@@ -1451,6 +2000,7 @@ async function startServer() {
         slot_time,
         booking_preference,
         preferred_barber_id,
+        barber_id,
         booking_type,
         notes,
         haircut_preference,
@@ -1466,6 +2016,7 @@ async function startServer() {
         slot_time: string;
         booking_preference: BookingPreference;
         preferred_barber_id?: string;
+        barber_id?: string;
         booking_type?: BookingType;
         notes?: string;
         haircut_preference?: string;
@@ -1474,6 +2025,7 @@ async function startServer() {
         website_honeypot?: string;
         start_immediately?: boolean;
       };
+      const resolvedPreferredBarberId = preferred_barber_id || barber_id;
 
       // Anti-spam honeypot check
       if (website_honeypot && String(website_honeypot).trim().length > 0) {
@@ -1481,14 +2033,27 @@ async function startServer() {
         return;
       }
 
-      if (!customer_name || String(customer_name).trim().length < 2) {
+      // Enforce authenticated customer identity when booked by CUSTOMER session
+      const sessionPhone = session.role === 'CUSTOMER' ? normalizePhone10(session.phone) : '';
+      const rawBodyPhone = normalizePhone10(customer_phone);
+      const normalizedPhoneCheck = session.role === 'CUSTOMER' ? sessionPhone : rawBodyPhone;
+
+      const sessionCustomer =
+        session.role === 'CUSTOMER' && session.customerId
+          ? db.customers.find((c) => c.id === session.customerId)
+          : undefined;
+      const effectiveCustomerName =
+        session.role === 'CUSTOMER' && sessionCustomer?.name
+          ? sessionCustomer.name
+          : String(customer_name || '').trim();
+
+      if (!effectiveCustomerName || effectiveCustomerName.length < 2) {
         res.status(400).json({ error: 'Please enter a valid customer name (at least 2 characters).' });
         return;
       }
 
-      const normalizedPhoneCheck = String(customer_phone || '').replace(/\D/g, '').slice(-10);
-      if (normalizedPhoneCheck.length !== 10) {
-        res.status(400).json({ error: 'Please enter a valid 10-digit mobile number.' });
+      if (!isValidIndianMobile(normalizedPhoneCheck)) {
+        res.status(400).json({ error: 'Valid 10-digit Indian mobile number (6-9 se shuru) zaroori hai.' });
         return;
       }
 
@@ -1501,11 +2066,12 @@ async function startServer() {
         return;
       }
 
-      const resolvedType: BookingType = booking_type || 'ONLINE';
+      const resolvedType: BookingType =
+        session.role === 'CUSTOMER' ? 'ONLINE' : booking_type || 'ONLINE';
       const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
 
-      // Rate limit & spam protection for public ONLINE customer bookings
-      if (resolvedType === 'ONLINE' && verification_method !== 'OWNER_CREATED') {
+      // Rate limit & spam protection for ONLINE customer bookings
+      if (session.role === 'CUSTOMER') {
         if (!checkRateLimit(`book_ip:${clientIp}`, 8, 10 * 60 * 1000)) {
           res.status(429).json({
             error: 'Too many booking attempts from this device. Please wait a few minutes before booking again.',
@@ -1575,13 +2141,13 @@ async function startServer() {
         );
         if (ownerConflict) {
           res.status(409).json({
-            error: `Salon Owner is already booked at ${slot_time} on ${booking_date}. Please choose another slot for Owner Preferred service.`,
+            error: `Salon Owner is already booked at ${formatTime12h(slot_time)} on ${booking_date}. Please choose another slot for Owner Preferred service.`,
           });
           return;
         }
         assignedBarber = ownerBarber;
       } else if (booking_preference === 'SPECIFIC_STAFF') {
-        const targetBarber = db.staff.find((s) => s.id === preferred_barber_id && s.is_active);
+        const targetBarber = db.staff.find((s) => s.id === resolvedPreferredBarberId && s.is_active);
         if (!targetBarber) {
           res.status(400).json({ error: 'Selected barber is not available or inactive.' });
           return;
@@ -1599,7 +2165,7 @@ async function startServer() {
         );
         if (conflict) {
           res.status(409).json({
-            error: `${targetBarber.name} is already booked at ${slot_time} on ${booking_date}. Please select another time slot.`,
+            error: `${targetBarber.name} is already booked at ${formatTime12h(slot_time)} on ${booking_date}. Please select another time slot.`,
           });
           return;
         }
@@ -1623,7 +2189,7 @@ async function startServer() {
 
         if (freeBarbers.length === 0) {
           res.status(409).json({
-            error: `All barbers are booked at ${slot_time} on ${booking_date}. Please choose another time slot.`,
+            error: `All barbers are booked at ${formatTime12h(slot_time)} on ${booking_date}. Please choose another time slot.`,
           });
           return;
         }
@@ -1640,12 +2206,12 @@ async function startServer() {
         assignedBarber = freeBarbers[0];
       }
 
-      const cleanPhone = String(customer_phone).replace(/\D/g, '').slice(-10);
-      const cleanName = String(customer_name).trim();
+      const cleanPhone = normalizedPhoneCheck;
+      const cleanName = effectiveCustomerName;
       const now = new Date().toISOString();
 
       // Find or create customer
-      let customer = db.customers.find((c) => c.phone === cleanPhone);
+      let customer = db.customers.find((c) => normalizePhone10(c.phone) === cleanPhone);
       if (!customer) {
         customer = {
           id: crypto.randomUUID(),
@@ -1683,7 +2249,10 @@ async function startServer() {
         id: bookingId,
         salon_id: db.salon.id,
         reference_code: referenceCode,
-        verification_method: verification_method || (resolvedType === 'WALK_IN' ? 'OWNER_CREATED' : 'GUEST_EXPRESS'),
+        verification_method:
+          session.role === 'CUSTOMER'
+            ? 'OTP_VERIFIED'
+            : verification_method || 'OWNER_CREATED',
         customer_id: customer.id,
         customer_name: customer.name,
         customer_phone: customer.phone,
@@ -1694,7 +2263,7 @@ async function startServer() {
         booking_date,
         slot_time,
         token_number: tokenNumber,
-        status: start_immediately ? 'IN_PROGRESS' : 'WAITING',
+        status: session.role !== 'CUSTOMER' && start_immediately ? 'IN_PROGRESS' : 'WAITING',
         total_amount: totalAmount,
         notes: notes ? String(notes).trim() : '',
         is_billed: false,
@@ -1714,12 +2283,13 @@ async function startServer() {
       db.bookings.push(newBooking);
       db.bookingServices.push(...bookingServiceRows);
 
+      const slotLabel12h = formatTime12h(slot_time);
       const notification: NotificationItem = {
         id: crypto.randomUUID(),
         salon_id: db.salon.id,
         recipient_role: 'OWNER',
         title: `New Booking #${tokenNumber} — ${customer.name}`,
-        message: `${selectedServices.map((s) => s.name).join(', ')} with ${assignedBarber.name} at ${slot_time} (${booking_date})`,
+        message: `${selectedServices.map((s) => s.name).join(', ')} with ${assignedBarber.name} at ${slotLabel12h} (${booking_date})`,
         is_read: false,
         created_at: now,
       };
@@ -1731,7 +2301,7 @@ async function startServer() {
         recipient_role: 'CUSTOMER',
         recipient_phone: customer.phone,
         title: `बुकिंग पक्की · टोकन #${tokenNumber}`,
-        message: `${assignedBarber.name} के साथ ${booking_date} को ${slot_time} बजे आपकी सीट बुक हो गई है।`,
+        message: `${assignedBarber.name} के साथ ${booking_date} को ${slotLabel12h} पर आपकी सीट बुक हो गई है।`,
         is_read: false,
         created_at: now,
       };
@@ -1746,7 +2316,7 @@ async function startServer() {
       }
 
       const fullBooking = { ...newBooking, services: bookingServiceRows };
-      broadcastRealtimeUpdate('BOOKING_CREATED', fullBooking);
+      broadcastRealtimeUpdate('BOOKING_CREATED');
       res.status(201).json({ booking: fullBooking, customer });
     } finally {
       bookingLock = false;
@@ -1755,12 +2325,24 @@ async function startServer() {
 
   // 6. Update Booking Status (WAITING -> IN_PROGRESS -> COMPLETED / CANCELLED) + Live Customer Alerts
   app.patch('/api/bookings/:id/status', async (req: Request, res: Response) => {
+    const session = requireRoles(req, res, ['OWNER', 'RECEPTION', 'STAFF', 'CUSTOMER']);
+    if (!session) return;
     const { id } = req.params;
     const { status } = req.body as { status: BookingStatus };
     const booking = db.bookings.find((b) => b.id === id);
     if (!booking) {
       res.status(404).json({ error: 'Booking not found.' });
       return;
+    }
+    if (session.role === 'STAFF' && booking.barber_id !== session.staffId) {
+      res.status(403).json({ error: 'Aap sirf apni chair ki bookings update kar sakte hain.' });
+      return;
+    }
+    if (session.role === 'CUSTOMER') {
+      if (normalizePhone10(booking.customer_phone) !== normalizePhone10(session.phone) || status !== 'CANCELLED') {
+        res.status(403).json({ error: 'Customer sirf apni booking cancel kar sakta hai.' });
+        return;
+      }
     }
 
     const now = new Date().toISOString();
@@ -1796,7 +2378,7 @@ async function startServer() {
           recipient_role: 'CUSTOMER',
           recipient_phone: nextWaiting.customer_phone,
           title: `आपका नंबर अगला है! (टोकन #${nextWaiting.token_number})`,
-          message: `टोकन #${booking.token_number} का काम शुरू हो गया है। कृपया ${nextWaiting.slot_time} के लिए सैलून पहुंचें।`,
+          message: `टोकन #${booking.token_number} का काम शुरू हो गया है। कृपया ${formatTime12h(nextWaiting.slot_time)} के लिए सैलून पहुंचें।`,
           is_read: false,
           created_at: now,
         };
@@ -1809,7 +2391,7 @@ async function startServer() {
         recipient_role: 'CUSTOMER',
         recipient_phone: booking.customer_phone,
         title: `बुकिंग रद्द हुई (टोकन #${booking.token_number})`,
-        message: `${booking.booking_date} को ${booking.slot_time} बजे वाली बुकिंग रद्द कर दी गई है।`,
+        message: `${booking.booking_date} को ${formatTime12h(booking.slot_time)} वाली बुकिंग रद्द कर दी गई है।`,
         is_read: false,
         created_at: now,
       });
@@ -1824,16 +2406,22 @@ async function startServer() {
     for (const n of generatedNotifications) {
       await syncTableRowToSupabase('notifications', n as unknown as Record<string, unknown>);
     }
-    broadcastRealtimeUpdate('BOOKING_STATUS_UPDATED', { bookingId: id, status });
+    broadcastRealtimeUpdate('BOOKING_STATUS_UPDATED');
     res.json({ booking });
   });
 
-  // 6B. Live Edit Booking Time, Date, Quick Delay Shift, Barber, or Price (Notifies Customer Instantly!)
+  // 6B. Live Edit Booking Time, Date, Quick Delay Shift, Barber, or Price
   app.patch('/api/bookings/:id', async (req: Request, res: Response) => {
+    const session = requireRoles(req, res, ['OWNER', 'RECEPTION', 'STAFF']);
+    if (!session) return;
     const { id } = req.params;
     const booking = db.bookings.find((b) => b.id === id);
     if (!booking) {
       res.status(404).json({ error: 'Booking not found.' });
+      return;
+    }
+    if (session.role === 'STAFF' && booking.barber_id !== session.staffId) {
+      res.status(403).json({ error: 'Aap sirf apni booking update kar sakte hain.' });
       return;
     }
 
@@ -1879,7 +2467,7 @@ async function startServer() {
 
     const changes: string[] = [];
     if (booking.slot_time !== oldTime || booking.booking_date !== oldDate) {
-      changes.push(`नया समय: ${booking.slot_time} (${booking.booking_date})`);
+      changes.push(`नया समय: ${formatTime12h(booking.slot_time)} (${booking.booking_date})`);
     }
     if (booking.total_amount !== oldPrice) {
       changes.push(`नया बिल: ₹${booking.total_amount}`);
@@ -1895,7 +2483,7 @@ async function startServer() {
         booking.slot_time !== oldTime || booking.booking_date !== oldDate
           ? `समय बदला · टोकन #${booking.token_number}`
           : `बुकिंग अपडेट · टोकन #${booking.token_number}`,
-      message: `${changes.join(' · ') || `बुकिंग समय: ${booking.slot_time}`}${
+      message: `${changes.join(' · ') || `बुकिंग समय: ${formatTime12h(booking.slot_time)}`}${
         reasonText ? ` — ${reasonText}` : ' — सैलून ने आपका समय अपडेट किया है।'
       }`,
       is_read: false,
@@ -1908,16 +2496,23 @@ async function startServer() {
     delete cleanRow.services;
     await syncTableRowToSupabase('bookings', cleanRow);
     await syncTableRowToSupabase('notifications', customerAlert as unknown as Record<string, unknown>);
-    broadcastRealtimeUpdate('BOOKING_RESCHEDULED', { booking, notification: customerAlert });
+    broadcastRealtimeUpdate('BOOKING_RESCHEDULED');
     res.json({ booking, notification: customerAlert });
   });
 
   app.patch('/api/notifications/mark-read', async (req: Request, res: Response) => {
-    const phone = req.body?.phone ? String(req.body.phone).replace(/\D/g, '').slice(-10) : undefined;
-    const role = req.body?.role;
+    const session = requireRoles(req, res, ['OWNER', 'RECEPTION', 'STAFF', 'CUSTOMER']);
+    if (!session) return;
+    const phone =
+      session.role === 'CUSTOMER'
+        ? normalizePhone10(session.phone)
+        : req.body?.phone
+        ? normalizePhone10(req.body.phone)
+        : undefined;
+    const role = session.role === 'CUSTOMER' ? 'CUSTOMER' : req.body?.role;
     const updated: NotificationItem[] = [];
     for (const n of db.notifications) {
-      if (phone && n.recipient_phone === phone && !n.is_read) {
+      if (phone && normalizePhone10(n.recipient_phone) === phone && !n.is_read) {
         n.is_read = true;
         updated.push(n);
       } else if (!phone && role && n.recipient_role === role && !n.is_read) {
@@ -1932,8 +2527,9 @@ async function startServer() {
     res.json({ marked: updated.length });
   });
 
-  // 7. Split Billing & Payment System (Cash + UPI + Udhar + Automatic Commission + Idempotent Offline Sync)
+  // 7. Split Billing & Payment System (Owner & Reception only)
   app.post('/api/payments/bill', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER', 'RECEPTION'])) return;
     const {
       client_sync_id,
       booking_id,
@@ -2154,21 +2750,29 @@ async function startServer() {
     await syncTableRowToSupabase('payments', payment as unknown as Record<string, unknown>);
     await syncTableRowToSupabase('customer_service_history', historyEntry as unknown as Record<string, unknown>);
 
-    broadcastRealtimeUpdate('PAYMENT_RECORDED', { payment, customerId: customer.id });
+    broadcastRealtimeUpdate('PAYMENT_RECORDED');
     res.status(201).json({ payment, customer, booking });
   });
 
-  // 8. Customer Udhar Due Settlement (Collect Pending Udhar in Cash / UPI / Split)
+  // 8. Customer Udhar Due Settlement (Owner & Reception only)
   app.post('/api/payments/settle-due', async (req: Request, res: Response) => {
-    const { customer_id, cash_paid, upi_paid, notes, payment_date } = req.body;
+    if (!requireRoles(req, res, ['OWNER', 'RECEPTION'])) return;
+    const { customer_id, cash_paid, upi_paid, amount, payment_mode, notes, payment_date } = req.body;
     const customer = db.customers.find((c) => c.id === customer_id);
     if (!customer) {
       res.status(404).json({ error: 'Customer not found.' });
       return;
     }
 
-    const cashAmount = Math.max(0, Number(cash_paid || 0));
-    const upiAmount = Math.max(0, Number(upi_paid || 0));
+    let cashAmount = Math.max(0, Number(cash_paid || 0));
+    let upiAmount = Math.max(0, Number(upi_paid || 0));
+    if (cashAmount === 0 && upiAmount === 0 && Number(amount) > 0) {
+      if (String(payment_mode || '').toUpperCase() === 'UPI') {
+        upiAmount = Number(amount);
+      } else {
+        cashAmount = Number(amount);
+      }
+    }
     const totalSettled = cashAmount + upiAmount;
 
     if (totalSettled <= 0) {
@@ -2235,12 +2839,14 @@ async function startServer() {
     await syncTableRowToSupabase('customers', customer as unknown as Record<string, unknown>);
     await syncTableRowToSupabase('customer_dues', dueEntry as unknown as Record<string, unknown>);
 
-    broadcastRealtimeUpdate('DUE_SETTLED', { customer, payment });
+    broadcastRealtimeUpdate('DUE_SETTLED');
     res.status(201).json({ payment, customer, dueEntry });
   });
 
-  // 9. Customer Record Management (Edit & Safe Delete)
+  // 9. Customer Record Management (Owner, Reception, or Staff haircut note update)
   app.put('/api/customers/:id', async (req: Request, res: Response) => {
+    const session = requireRoles(req, res, ['OWNER', 'RECEPTION', 'STAFF']);
+    if (!session) return;
     const { id } = req.params;
     const customer = db.customers.find((c) => c.id === id);
     if (!customer) {
@@ -2248,8 +2854,17 @@ async function startServer() {
       return;
     }
     const { name, phone, haircut_preference, special_notes } = req.body;
-    if (name !== undefined) customer.name = String(name).trim();
-    if (phone !== undefined) customer.phone = normalizePhone10(phone);
+    if (session.role !== 'STAFF') {
+      if (name !== undefined && String(name).trim()) customer.name = String(name).trim();
+      if (phone !== undefined) {
+        const cleanPhone = normalizePhone10(phone);
+        if (!isValidIndianMobile(cleanPhone)) {
+          res.status(400).json({ error: 'Valid 10-digit Indian mobile number daalein.' });
+          return;
+        }
+        customer.phone = cleanPhone;
+      }
+    }
     if (haircut_preference !== undefined) customer.haircut_preference = String(haircut_preference).trim();
     if (special_notes !== undefined) customer.special_notes = String(special_notes).trim();
     customer.updated_at = new Date().toISOString();
@@ -2261,7 +2876,7 @@ async function startServer() {
   });
 
   app.delete('/api/customers/:id', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { id } = req.params;
     const idx = db.customers.findIndex((c) => c.id === id);
     if (idx === -1) {
@@ -2276,6 +2891,7 @@ async function startServer() {
       return;
     }
     db.customers.splice(idx, 1);
+    delete db.securityPins.customerPinHashes[id];
     saveDatabase();
     if (supabaseAdmin) {
       try {
@@ -2284,12 +2900,14 @@ async function startServer() {
         // Ignore if linked
       }
     }
+    await syncAuthStateToSupabase();
     broadcastRealtimeUpdate('CUSTOMER_UPDATED');
     res.json({ deleted: true });
   });
 
-  // 10. Expenses Management
+  // 10. Expenses Management (Owner & Reception add, Owner delete)
   app.post('/api/expenses', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER', 'RECEPTION'])) return;
     const { title, category, amount, payment_mode, expense_date, notes } = req.body;
     if (!title || !amount || Number(amount) <= 0) {
       res.status(400).json({ error: 'Expense title and a positive amount are required.' });
@@ -2314,7 +2932,7 @@ async function startServer() {
   });
 
   app.delete('/api/expenses/:id', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { id } = req.params;
     const idx = db.expenses.findIndex((e) => e.id === id);
     if (idx === -1) {
@@ -2336,7 +2954,7 @@ async function startServer() {
 
   // 11. Salon Settings & Time Slots Management (Owner protected)
   app.put('/api/settings', async (req: Request, res: Response) => {
-    if (!requireOwnerAuth(req, res)) return;
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const {
       salon_name,
       salon_phone,
@@ -2360,16 +2978,18 @@ async function startServer() {
     }
     if (salon_phone !== undefined) {
       const cleanPhone = normalizePhone10(salon_phone);
-      if (cleanPhone.length === 10) {
-        db.salon.phone = cleanPhone;
-        const ownerStaff = db.staff.find(
-          (s) => s.is_owner && normalizePhone10(s.phone) === oldSalonPhone10
-        );
-        if (ownerStaff) {
-          ownerStaff.phone = cleanPhone;
-          ownerStaff.updated_at = now;
-          await syncTableRowToSupabase('staff', ownerStaff as unknown as Record<string, unknown>);
-        }
+      if (!isValidIndianMobile(cleanPhone)) {
+        res.status(400).json({ error: 'Valid 10-digit Indian mobile number (6-9 se shuru) daalein.' });
+        return;
+      }
+      db.salon.phone = cleanPhone;
+      const ownerStaff = db.staff.find(
+        (s) => s.is_owner && normalizePhone10(s.phone) === oldSalonPhone10
+      );
+      if (ownerStaff) {
+        ownerStaff.phone = cleanPhone;
+        ownerStaff.updated_at = now;
+        await syncTableRowToSupabase('staff', ownerStaff as unknown as Record<string, unknown>);
       }
     }
     if (salon_address !== undefined) db.salon.address = String(salon_address).trim();
@@ -2421,6 +3041,7 @@ async function startServer() {
   });
 
   app.post('/api/time-slots', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const rawTime = String(req.body?.slot_time || '').trim();
     if (!/^\d{2}:\d{2}$/.test(rawTime)) {
       res.status(400).json({ error: 'Enter a valid 24-hour time like 08:30 or 21:30.' });
@@ -2451,6 +3072,7 @@ async function startServer() {
   });
 
   app.delete('/api/time-slots/:id', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { id } = req.params;
     const idx = db.timeSlots.findIndex((s) => s.id === id);
     if (idx === -1) {
@@ -2471,6 +3093,7 @@ async function startServer() {
   });
 
   app.patch('/api/time-slots/:id', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
     const { id } = req.params;
     const { is_enabled } = req.body;
     const slot = db.timeSlots.find((s) => s.id === id);

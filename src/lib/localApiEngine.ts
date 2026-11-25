@@ -10,9 +10,8 @@ import type {
   Expense,
   NotificationItem,
   Payment,
+  ReceptionAccount,
   SalonBootstrapData,
-  SalonOffer,
-  SalonReview,
   ServiceItem,
   StaffMember,
   TimeSlot,
@@ -22,12 +21,30 @@ import { cacheSalonStateLocally, getCachedSalonState } from './offlineDb';
 const LOCAL_PINS_KEY = 'sb_local_security_pins';
 const LOCAL_LOCK_KEY = 'sb_local_pin_attempts';
 
+function isValidIndianMobile(phone: string): boolean {
+  return /^[6-9]\d{9}$/.test(phone);
+}
+
+function isValidPin(pin: string): boolean {
+  return /^\d{4,6}$/.test(pin);
+}
+
 function normalizePhone10(raw: unknown): string {
   return String(raw || '').replace(/\D/g, '').slice(-10);
 }
 
 function getTodayDateString(): string {
   return new Date().toLocaleDateString('en-CA');
+}
+
+function formatTime12h(hhmm: string): string {
+  const [hStr, mStr] = (hhmm || '09:00').split(':');
+  const h = Number(hStr);
+  const m = Number(mStr);
+  if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${suffix}`;
 }
 
 function makeUuid(): string {
@@ -68,7 +85,6 @@ export function createDefaultLocalSalonState(): SalonBootstrapData {
   const now = new Date().toISOString();
   const today = getTodayDateString();
   const salonId = '11111111-1111-4111-8111-111111111111';
-  const heroImg = '/src/assets/images/salon_hero_interior_1795068719871.jpg';
 
   const staff: StaffMember[] = [
     {
@@ -137,6 +153,9 @@ export function createDefaultLocalSalonState(): SalonBootstrapData {
     supabaseConnected: false,
     supabaseUrlConfigured: false,
     storageMode: 'LOCAL_POSTGRES_REPLICA',
+    authRole: 'NONE',
+    needsOwnerSetup: false,
+    isDefaultOwnerPin: false,
     salon: {
       id: salonId,
       name: 'SB Gents Salon',
@@ -162,38 +181,8 @@ export function createDefaultLocalSalonState(): SalonBootstrapData {
       customer_apk_url: '',
       updated_at: now,
     },
-    showcase: {
-      hero_image_url: heroImg,
-      hero_images: [heroImg],
-      hero_badge: 'Gents Salon & Grooming',
-      hero_title: '',
-      hero_subtitle: 'Precision Haircuts, Beard Styling & Luxury Grooming',
-      hero_highlights: [
-        { id: 'hl-1', text: 'AC Lounge & Hygienic Tools', is_active: true },
-        { id: 'hl-2', text: 'Zero Wait Live Queue Tracking', is_active: true },
-      ],
-      ticker_enabled: true,
-      ticker_items: [
-        { id: 'tk-1', text: 'Welcome! Book your slot online or via WhatsApp', is_active: true },
-        { id: 'tk-2', text: 'Haircut + Beard Combo available today', is_active: true },
-      ],
-      offers: [
-        {
-          id: 'offer-welcome',
-          title: 'Haircut + Beard Combo Special',
-          badge: 'COMBO OFFER',
-          description: 'Book Haircut + Beard Trimming today for priority token service.',
-          valid_until: '',
-          show_popup: true,
-          is_active: true,
-          created_at: now,
-        },
-      ],
-      footer_tagline: '',
-      developer_credit: 'Mirza Saif',
-    },
-    reviews: [],
     staff,
+    receptionAccounts: [],
     services,
     customers: [],
     timeSlots: generateTimeSlots('09:00', '21:00', 30, salonId),
@@ -217,22 +206,47 @@ export function createDefaultLocalSalonState(): SalonBootstrapData {
   };
 }
 
-function getLocalPins(): { ownerPin: string; staffPin: string } {
+interface LocalSecurityStore {
+  ownerClaimed?: boolean;
+  ownerPin: string;
+  staffPins: Record<string, string>;
+  receptionPins: Record<string, string>;
+  customerPins: Record<string, string>;
+}
+
+function getLocalPins(): LocalSecurityStore {
   try {
     const raw = localStorage.getItem(LOCAL_PINS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed.ownerPin && parsed.staffPin) return parsed;
+      const parsed = JSON.parse(raw) as Partial<LocalSecurityStore>;
+      return {
+        ownerClaimed: parsed.ownerClaimed ?? true,
+        ownerPin: parsed.ownerPin || '1234',
+        staffPins: parsed.staffPins || {},
+        receptionPins: parsed.receptionPins || {},
+        customerPins: parsed.customerPins || {},
+      };
     }
   } catch {
     // Ignore storage error
   }
-  return { ownerPin: '1234', staffPin: '0000' };
+  return {
+    ownerClaimed: true,
+    ownerPin: '1234',
+    staffPins: {},
+    receptionPins: {},
+    customerPins: {},
+  };
+}
+
+function saveLocalPins(pins: LocalSecurityStore): void {
+  localStorage.setItem(LOCAL_PINS_KEY, JSON.stringify(pins));
 }
 
 async function loadOrInitLocalState(): Promise<SalonBootstrapData> {
   const existing = await getCachedSalonState();
   if (existing && existing.salon && existing.services) {
+    if (!Array.isArray(existing.receptionAccounts)) existing.receptionAccounts = [];
     return existing;
   }
   const initial = createDefaultLocalSalonState();
@@ -258,9 +272,11 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
     return jsonResponse(state);
   }
 
-  // 2. PIN Auth (Phone + PIN + 5-attempt lockout)
+  // 2. PIN Auth (Phone + PIN + 5-attempt lockout for OWNER, RECEPTION, STAFF)
   if (path === '/api/auth/verify-pin' && method === 'POST') {
-    const role = body.role === 'STAFF' ? 'STAFF' : 'OWNER';
+    const rawRole = String(body.role || 'OWNER').toUpperCase();
+    const role: 'OWNER' | 'RECEPTION' | 'STAFF' =
+      rawRole === 'STAFF' ? 'STAFF' : rawRole === 'RECEPTION' ? 'RECEPTION' : 'OWNER';
     const cleanPhone = normalizePhone10(body.phone);
     const pin = String(body.pin || '').trim();
     const nowMs = Date.now();
@@ -281,47 +297,15 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
       );
     }
 
-    if (cleanPhone.length !== 10 || !/^\d{4,6}$/.test(pin)) {
+    if (!isValidIndianMobile(cleanPhone) || !isValidPin(pin)) {
       return jsonResponse(
-        { verified: false, error: '10-digit registered mobile number aur 4-digit PIN zaroori hai.' },
+        { verified: false, error: '10-digit registered Indian mobile number aur 4-6 digit PIN zaroori hai.' },
         400
       );
     }
 
     const pins = getLocalPins();
-    if (role === 'OWNER') {
-      const ownerPhones = new Set<string>();
-      const sp = normalizePhone10(state.salon.phone);
-      if (sp.length === 10) ownerPhones.add(sp);
-      state.staff.forEach((s) => {
-        if (s.is_active && s.is_owner) {
-          const p = normalizePhone10(s.phone);
-          if (p.length === 10) ownerPhones.add(p);
-        }
-      });
-
-      if (!ownerPhones.has(cleanPhone) || pin !== pins.ownerPin) {
-        const prevCount = lockEntry && lockEntry.lockedUntil <= nowMs ? lockEntry.count : 0;
-        const nextCount = prevCount + 1;
-        lockMap[role] = {
-          count: nextCount >= 5 ? 0 : nextCount,
-          lockedUntil: nextCount >= 5 ? nowMs + 5 * 60 * 1000 : 0,
-        };
-        localStorage.setItem(LOCAL_LOCK_KEY, JSON.stringify(lockMap));
-        return jsonResponse(
-          { verified: false, error: 'Registered Owner mobile number ya PIN galat hai.' },
-          401
-        );
-      }
-      delete lockMap[role];
-      localStorage.setItem(LOCAL_LOCK_KEY, JSON.stringify(lockMap));
-      return jsonResponse({ verified: true, role: 'OWNER', token: `local-owner-${nowMs}` });
-    }
-
-    const matchedStaff = state.staff.find(
-      (s) => s.is_active && normalizePhone10(s.phone) === cleanPhone
-    );
-    if (!matchedStaff || pin !== pins.staffPin) {
+    const recordFailure = () => {
       const prevCount = lockEntry && lockEntry.lockedUntil <= nowMs ? lockEntry.count : 0;
       const nextCount = prevCount + 1;
       lockMap[role] = {
@@ -329,10 +313,53 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
         lockedUntil: nextCount >= 5 ? nowMs + 5 * 60 * 1000 : 0,
       };
       localStorage.setItem(LOCAL_LOCK_KEY, JSON.stringify(lockMap));
-      return jsonResponse(
-        { verified: false, error: 'Registered Staff mobile number ya PIN galat hai.' },
-        401
+    };
+
+    if (role === 'OWNER') {
+      const ownerPhones = new Set<string>();
+      const sp = normalizePhone10(state.salon.phone);
+      if (isValidIndianMobile(sp)) ownerPhones.add(sp);
+      state.staff.forEach((s) => {
+        if (s.is_active && s.is_owner) {
+          const p = normalizePhone10(s.phone);
+          if (isValidIndianMobile(p)) ownerPhones.add(p);
+        }
+      });
+
+      if (!ownerPhones.has(cleanPhone) || pin !== pins.ownerPin) {
+        recordFailure();
+        return jsonResponse({ verified: false, error: 'Malik ka mobile number ya PIN galat hai.' }, 401);
+      }
+      delete lockMap[role];
+      localStorage.setItem(LOCAL_LOCK_KEY, JSON.stringify(lockMap));
+      return jsonResponse({ verified: true, role: 'OWNER', token: `local-owner-${nowMs}` });
+    }
+
+    if (role === 'RECEPTION') {
+      const matchedRec = (state.receptionAccounts || []).find(
+        (r) => r.is_active && normalizePhone10(r.phone) === cleanPhone
       );
+      if (!matchedRec || pin !== pins.receptionPins[matchedRec.id]) {
+        recordFailure();
+        return jsonResponse({ verified: false, error: 'Receptionist ka mobile number ya PIN galat hai.' }, 401);
+      }
+      delete lockMap[role];
+      localStorage.setItem(LOCAL_LOCK_KEY, JSON.stringify(lockMap));
+      return jsonResponse({
+        verified: true,
+        role: 'RECEPTION',
+        receptionId: matchedRec.id,
+        receptionName: matchedRec.name,
+        token: `local-reception-${matchedRec.id}-${nowMs}`,
+      });
+    }
+
+    const matchedStaff = state.staff.find(
+      (s) => s.is_active && !s.is_owner && normalizePhone10(s.phone) === cleanPhone
+    );
+    if (!matchedStaff || pin !== pins.staffPins[matchedStaff.id]) {
+      recordFailure();
+      return jsonResponse({ verified: false, error: 'Staff ka mobile number ya PIN galat hai.' }, 401);
     }
 
     delete lockMap[role];
@@ -346,48 +373,107 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
     });
   }
 
+  if (path === '/api/auth/setup-owner' && method === 'POST') {
+    const cleanPhone = normalizePhone10(body.phone);
+    const pin = String(body.pin || '').trim();
+    if (!isValidIndianMobile(cleanPhone) || !isValidPin(pin)) {
+      return jsonResponse({ error: 'Valid Indian mobile aur 4-6 digit PIN daalein.' }, 400);
+    }
+    state.salon.name = String(body.salonName || state.salon.name).trim();
+    state.salon.phone = cleanPhone;
+    const ownerStaff = state.staff.find((s) => s.is_owner);
+    if (ownerStaff) {
+      ownerStaff.name = String(body.ownerName || ownerStaff.name).trim();
+      ownerStaff.phone = cleanPhone;
+    }
+    const pins = getLocalPins();
+    pins.ownerPin = pin;
+    pins.ownerClaimed = true;
+    saveLocalPins(pins);
+    await cacheSalonStateLocally(state);
+    return jsonResponse({ verified: true, role: 'OWNER', token: `local-owner-${Date.now()}` }, 201);
+  }
+
   if (path === '/api/auth/pins' && (method === 'PATCH' || method === 'PUT')) {
     const pins = getLocalPins();
     const rawOwner = body.ownerPin ?? body.new_owner_pin;
-    const rawStaff = body.staffPin ?? body.new_staff_pin;
-    let updatedAny = false;
-    if (rawOwner !== undefined && String(rawOwner).trim() !== '') {
-      const cleanOwner = String(rawOwner).trim();
-      if (!/^\d{4,6}$/.test(cleanOwner)) {
-        return jsonResponse({ error: 'Owner PIN 4 se 6 digits ka number hona chahiye.' }, 400);
-      }
-      pins.ownerPin = cleanOwner;
-      updatedAny = true;
+    const cleanOwner = String(rawOwner || '').trim();
+    if (!isValidPin(cleanOwner)) {
+      return jsonResponse({ error: 'Malik PIN 4 se 6 digits ka number hona chahiye.' }, 400);
     }
-    if (rawStaff !== undefined && String(rawStaff).trim() !== '') {
-      const cleanStaff = String(rawStaff).trim();
-      if (!/^\d{4,6}$/.test(cleanStaff)) {
-        return jsonResponse({ error: 'Staff PIN 4 se 6 digits ka number hona chahiye.' }, 400);
-      }
-      pins.staffPin = cleanStaff;
-      updatedAny = true;
-    }
-    if (!updatedAny) {
-      return jsonResponse({ error: 'Kam se kam ek valid 4-digit PIN daalein.' }, 400);
-    }
-    localStorage.setItem(LOCAL_PINS_KEY, JSON.stringify(pins));
+    pins.ownerPin = cleanOwner;
+    saveLocalPins(pins);
     return jsonResponse({ updated: true });
   }
 
-  // 3. OTP Express Helpers
-  if (path === '/api/otp/request' && method === 'POST') {
-    return jsonResponse({
-      sent: true,
-      demo_otp: '1234',
-      message: 'Verification OTP: 1234 (Phone Mode)',
-    });
+  if (path === '/api/auth/customer/register' && method === 'POST') {
+    const cleanName = String(body.name || '').trim();
+    const cleanPhone = normalizePhone10(body.phone);
+    const cleanPin = String(body.pin || '').trim();
+    if (cleanName.length < 2 || !isValidIndianMobile(cleanPhone) || !isValidPin(cleanPin)) {
+      return jsonResponse({ error: 'Naam, valid 10-digit mobile aur 4-6 digit PIN zaroori hai.' }, 400);
+    }
+    const pins = getLocalPins();
+    let customer = state.customers.find((c) => normalizePhone10(c.phone) === cleanPhone);
+    if (customer && pins.customerPins[customer.id]) {
+      return jsonResponse({ error: 'Account pehle se bana hai, Login karein.' }, 409);
+    }
+    if (!customer) {
+      customer = {
+        id: makeUuid(),
+        salon_id: state.salon.id,
+        name: cleanName,
+        phone: cleanPhone,
+        haircut_preference: '',
+        special_notes: '',
+        total_visits: 0,
+        total_spent: 0,
+        outstanding_due: 0,
+        last_visit_date: null,
+        is_registered: true,
+        created_at: now,
+        updated_at: now,
+      };
+      state.customers.push(customer);
+    } else {
+      customer.name = cleanName;
+      customer.is_registered = true;
+      customer.updated_at = now;
+    }
+    pins.customerPins[customer.id] = cleanPin;
+    saveLocalPins(pins);
+    await cacheSalonStateLocally(state);
+    return jsonResponse({ verified: true, role: 'CUSTOMER', customer, token: `local-cust-${customer.id}-${Date.now()}` }, 201);
   }
 
-  if (path === '/api/otp/verify' && method === 'POST') {
-    return jsonResponse({
-      verified: true,
-      verificationToken: `local-otp-${Date.now()}`,
-    });
+  if (path === '/api/auth/customer/login' && method === 'POST') {
+    const cleanPhone = normalizePhone10(body.phone);
+    const cleanPin = String(body.pin || '').trim();
+    const pins = getLocalPins();
+    const customer = state.customers.find((c) => normalizePhone10(c.phone) === cleanPhone);
+    if (!customer || pins.customerPins[customer.id] !== cleanPin) {
+      return jsonResponse({ verified: false, error: 'Mobile number ya PIN galat hai.' }, 401);
+    }
+    return jsonResponse({ verified: true, role: 'CUSTOMER', customer, token: `local-cust-${customer.id}-${Date.now()}` });
+  }
+
+  if (path === '/api/auth/customer/pin' && method === 'PUT') {
+    return jsonResponse({ updated: true });
+  }
+
+  const custPinMatch = path.match(/^\/api\/customers\/([^/]+)\/pin$/);
+  if (custPinMatch && method === 'PUT') {
+    const pins = getLocalPins();
+    pins.customerPins[custPinMatch[1]] = String(body.pin || '').trim();
+    saveLocalPins(pins);
+    return jsonResponse({ updated: true });
+  }
+
+  if (path === '/api/otp/request' && method === 'POST') {
+    return jsonResponse(
+      { sent: false, error: 'Offline mode me OTP SMS available nahi hai.' },
+      503
+    );
   }
 
   // 4. Create Booking
@@ -423,9 +509,10 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
     }
 
     // Choose barber
+    const targetBarberId = body.preferred_barber_id || body.barber_id;
     const activeStaff = state.staff.filter((s) => s.is_active && s.availability_status !== 'Not Available');
-    let barber =
-      state.staff.find((s) => s.id === body.barber_id) ||
+    const barber =
+      state.staff.find((s) => s.id === targetBarberId) ||
       activeStaff[0] ||
       state.staff[0];
 
@@ -471,12 +558,13 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
 
     state.bookings.push(newBooking);
 
+    const slotLabel12h = formatTime12h(slotTime);
     const ownerNotif: NotificationItem = {
       id: makeUuid(),
       salon_id: state.salon.id,
       recipient_role: 'OWNER',
       title: `New Booking · Token #${tokenNumber}`,
-      message: `${cleanName} (${cleanPhone}) booked ${chosenServices.map((s) => s.name).join(', ')} with ${barber.name} on ${bookingDate} at ${slotTime}.`,
+      message: `${cleanName} (${cleanPhone}) booked ${chosenServices.map((s) => s.name).join(', ')} with ${barber.name} on ${bookingDate} at ${slotLabel12h}.`,
       is_read: false,
       created_at: now,
     };
@@ -486,7 +574,7 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
       recipient_role: 'CUSTOMER',
       recipient_phone: cleanPhone,
       title: `बुकिंग पक्की · टोकन #${tokenNumber}`,
-      message: `${barber.name} के साथ ${bookingDate} को ${slotTime} बजे आपकी सीट बुक हो गई है। लाइव नंबर यहीं दिखेगा।`,
+      message: `${barber.name} के साथ ${bookingDate} को ${slotLabel12h} पर आपकी सीट बुक हो गई है। लाइव नंबर यहीं दिखेगा।`,
       is_read: false,
       created_at: now,
     };
@@ -541,7 +629,7 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
         recipient_role: 'CUSTOMER',
         recipient_phone: booking.customer_phone,
         title: `बुकिंग रद्द हुई (टोकन #${booking.token_number})`,
-        message: `${booking.booking_date} को ${booking.slot_time} बजे वाली आपकी बुकिंग रद्द कर दी गई है।`,
+        message: `${booking.booking_date} को ${formatTime12h(booking.slot_time)} वाली आपकी बुकिंग रद्द कर दी गई है।`,
         is_read: false,
         created_at: now,
       });
@@ -577,7 +665,7 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
       recipient_role: 'CUSTOMER',
       recipient_phone: booking.customer_phone,
       title: `समय बदला · टोकन #${booking.token_number}`,
-      message: `आपकी बुकिंग का नया समय: ${booking.booking_date} को ${booking.slot_time} बजे (${booking.barber_name}) · ₹${booking.total_amount}`,
+      message: `आपकी बुकिंग का नया समय: ${booking.booking_date} को ${formatTime12h(booking.slot_time)} (${booking.barber_name}) · ₹${booking.total_amount}`,
       is_read: false,
       created_at: now,
     });
@@ -785,8 +873,9 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
 
   if (path === '/api/staff' && method === 'POST') {
     const cleanPhone = normalizePhone10(body.phone);
-    if (!body.name || cleanPhone.length !== 10) {
-      return jsonResponse({ error: 'Staff name and 10-digit mobile number are required.' }, 400);
+    const cleanPin = String(body.pin || '').trim();
+    if (!body.name || !isValidIndianMobile(cleanPhone) || !isValidPin(cleanPin)) {
+      return jsonResponse({ error: 'Staff name, valid mobile, and 4-6 digit PIN required.' }, 400);
     }
     const newStaff: StaffMember = {
       id: makeUuid(),
@@ -798,11 +887,15 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
       commission_pct: Math.min(100, Math.max(0, Number(body.commission_pct ?? 40))),
       availability_status: 'Available',
       is_active: true,
+      has_pin: true,
       joined_date: getTodayDateString(),
       created_at: now,
       updated_at: now,
     };
     state.staff.push(newStaff);
+    const pins = getLocalPins();
+    pins.staffPins[newStaff.id] = cleanPin;
+    saveLocalPins(pins);
     await cacheSalonStateLocally(state);
     return jsonResponse({ staff: newStaff }, 201);
   }
@@ -814,7 +907,7 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
     if (body.name !== undefined && String(body.name).trim()) st.name = String(body.name).trim();
     if (body.phone !== undefined) {
       const cleanPhone = normalizePhone10(body.phone);
-      if (cleanPhone.length !== 10) {
+      if (!isValidIndianMobile(cleanPhone)) {
         return jsonResponse({ error: 'Valid 10-digit mobile number is required.' }, 400);
       }
       st.phone = cleanPhone;
@@ -822,6 +915,12 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
         state.salon.phone = cleanPhone;
         state.salon.updated_at = now;
       }
+    }
+    if (body.pin !== undefined && String(body.pin).trim()) {
+      const pins = getLocalPins();
+      pins.staffPins[st.id] = String(body.pin).trim();
+      saveLocalPins(pins);
+      st.has_pin = true;
     }
     if (body.specialty !== undefined) st.specialty = String(body.specialty).trim();
     if (body.commission_pct !== undefined) {
@@ -843,6 +942,9 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
     const st = state.staff.find((s) => s.id === id);
     if (!st) return jsonResponse({ error: 'Staff not found' }, 404);
     if (st.is_owner) return jsonResponse({ error: 'Salon Owner ko delete nahi kiya ja sakta.' }, 400);
+    const pins = getLocalPins();
+    delete pins.staffPins[id];
+    saveLocalPins(pins);
     const hasHistory =
       state.bookings.some((b) => b.barber_id === id) ||
       state.commissions.some((c) => c.staff_id === id);
@@ -853,6 +955,58 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
       return jsonResponse({ deactivated: true });
     }
     state.staff = state.staff.filter((s) => s.id !== id);
+    await cacheSalonStateLocally(state);
+    return jsonResponse({ deleted: true });
+  }
+
+  if (path === '/api/reception-accounts' && method === 'POST') {
+    const cleanPhone = normalizePhone10(body.phone);
+    const cleanPin = String(body.pin || '').trim();
+    if (!body.name || !isValidIndianMobile(cleanPhone) || !isValidPin(cleanPin)) {
+      return jsonResponse({ error: 'Name, valid mobile, and PIN required.' }, 400);
+    }
+    const acc: ReceptionAccount = {
+      id: makeUuid(),
+      salon_id: state.salon.id,
+      name: String(body.name).trim(),
+      phone: cleanPhone,
+      is_active: true,
+      has_pin: true,
+      created_at: now,
+      updated_at: now,
+    };
+    if (!state.receptionAccounts) state.receptionAccounts = [];
+    state.receptionAccounts.push(acc);
+    const pins = getLocalPins();
+    pins.receptionPins[acc.id] = cleanPin;
+    saveLocalPins(pins);
+    await cacheSalonStateLocally(state);
+    return jsonResponse({ receptionAccount: acc }, 201);
+  }
+
+  const recMatch = path.match(/^\/api\/reception-accounts\/([^/]+)$/);
+  if (recMatch && method === 'PUT') {
+    const acc = (state.receptionAccounts || []).find((r) => r.id === recMatch[1]);
+    if (!acc) return jsonResponse({ error: 'Reception account not found' }, 404);
+    if (body.name) acc.name = String(body.name).trim();
+    if (body.phone) acc.phone = normalizePhone10(body.phone);
+    if (body.is_active !== undefined) acc.is_active = Boolean(body.is_active);
+    if (body.pin && String(body.pin).trim()) {
+      const pins = getLocalPins();
+      pins.receptionPins[acc.id] = String(body.pin).trim();
+      saveLocalPins(pins);
+      acc.has_pin = true;
+    }
+    acc.updated_at = now;
+    await cacheSalonStateLocally(state);
+    return jsonResponse({ receptionAccount: acc });
+  }
+
+  if (recMatch && method === 'DELETE') {
+    state.receptionAccounts = (state.receptionAccounts || []).filter((r) => r.id !== recMatch[1]);
+    const pins = getLocalPins();
+    delete pins.receptionPins[recMatch[1]];
+    saveLocalPins(pins);
     await cacheSalonStateLocally(state);
     return jsonResponse({ deleted: true });
   }
@@ -957,17 +1111,6 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
     return jsonResponse({ salon: state.salon, settings: state.settings, timeSlots: state.timeSlots });
   }
 
-  if (path === '/api/showcase' && (method === 'PATCH' || method === 'PUT')) {
-    state.showcase = { ...state.showcase, ...body };
-    await cacheSalonStateLocally(state);
-    return jsonResponse({ showcase: state.showcase });
-  }
-
-  if (path === '/api/showcase/upload-image' && method === 'POST') {
-    const dataUrl = String(body.dataUrl || '');
-    return jsonResponse({ url: dataUrl });
-  }
-
   if (path === '/api/time-slots' && method === 'POST') {
     const newSlot: TimeSlot = {
       id: makeUuid(),
@@ -992,66 +1135,6 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
 
   if (slotMatch && method === 'DELETE') {
     state.timeSlots = state.timeSlots.filter((t) => t.id !== slotMatch[1]);
-    await cacheSalonStateLocally(state);
-    return jsonResponse({ deleted: true });
-  }
-
-  // 14. Offers & Reviews
-  if (path === '/api/offers' && method === 'POST') {
-    const offer: SalonOffer = {
-      id: makeUuid(),
-      title: String(body.title || 'Offer'),
-      badge: String(body.badge || 'OFFER'),
-      description: String(body.description || ''),
-      valid_until: String(body.valid_until || ''),
-      show_popup: Boolean(body.show_popup),
-      is_active: true,
-      created_at: now,
-    };
-    state.showcase.offers.unshift(offer);
-    await cacheSalonStateLocally(state);
-    return jsonResponse({ offer }, 201);
-  }
-
-  const offerMatch = path.match(/^\/api\/offers\/([^/]+)$/);
-  if (offerMatch && (method === 'PATCH' || method === 'PUT')) {
-    const o = state.showcase.offers.find((item) => item.id === offerMatch[1]);
-    if (o) Object.assign(o, body);
-    await cacheSalonStateLocally(state);
-    return jsonResponse({ offer: o });
-  }
-
-  if (offerMatch && method === 'DELETE') {
-    state.showcase.offers = state.showcase.offers.filter((o) => o.id !== offerMatch[1]);
-    await cacheSalonStateLocally(state);
-    return jsonResponse({ deleted: true });
-  }
-
-  if (path === '/api/reviews' && method === 'POST') {
-    const review: SalonReview = {
-      id: makeUuid(),
-      customer_name: String(body.customer_name || 'Guest'),
-      rating: Number(body.rating || 5),
-      comment: String(body.comment || ''),
-      service_name: String(body.service_name || ''),
-      is_visible: true,
-      created_at: now,
-    };
-    state.reviews.unshift(review);
-    await cacheSalonStateLocally(state);
-    return jsonResponse({ review }, 201);
-  }
-
-  const reviewMatch = path.match(/^\/api\/reviews\/([^/]+)$/);
-  if (reviewMatch && (method === 'PATCH' || method === 'PUT')) {
-    const r = state.reviews.find((item) => item.id === reviewMatch[1]);
-    if (r) Object.assign(r, body);
-    await cacheSalonStateLocally(state);
-    return jsonResponse({ review: r });
-  }
-
-  if (reviewMatch && method === 'DELETE') {
-    state.reviews = state.reviews.filter((r) => r.id !== reviewMatch[1]);
     await cacheSalonStateLocally(state);
     return jsonResponse({ deleted: true });
   }

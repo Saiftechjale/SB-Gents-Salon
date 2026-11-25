@@ -330,3 +330,16 @@ CREATE POLICY "Staff view own commissions" ON public.commissions FOR SELECT
     SELECT 1 FROM public.staff s
     WHERE s.id = commissions.staff_id AND s.profile_id = auth.uid()
   ));
+
+-- 17. SALON_AUTH_STATE TABLE (Salted PIN Hashes & Reception Counter Accounts)
+CREATE TABLE IF NOT EXISTS public.salon_auth_state (
+  salon_id UUID PRIMARY KEY REFERENCES public.salons(id) ON DELETE CASCADE,
+  reception_accounts JSONB NOT NULL DEFAULT '[]'::jsonb,
+  security_pins JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.salon_auth_state ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Owner full access salon_auth_state" ON public.salon_auth_state FOR ALL
+  USING (EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role = 'OWNER'));
+

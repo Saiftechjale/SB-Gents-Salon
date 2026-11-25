@@ -114,3 +114,10 @@ export function formatServiceCombo(names: string[]): string {
   return parts.join(' + ');
 }
 
+export function normalizeTimesInText12h(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/\b([01]?\d|2[0-3]):([0-5]\d)\s*(बजे|baje)?(?!\s*(AM|PM))/gi, (_match, hStr, mStr) => {
+      return formatSlot12h(`${String(hStr).padStart(2, '0')}:${mStr}`);
+    });
+}

@@ -47,6 +47,7 @@ interface ReceptionPortalViewProps {
   data: SalonBootstrapData;
   isOnline: boolean;
   isShopApk?: boolean;
+  canSwitchToOwner?: boolean;
   onSaveOfflineDraft: (draft: OfflineDraftBill) => Promise<void>;
   onRefresh: () => Promise<void>;
   notify: (type: 'success' | 'error', message: string) => void;
@@ -59,6 +60,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
   data,
   isOnline,
   isShopApk = false,
+  canSwitchToOwner = false,
   onSaveOfflineDraft,
   onRefresh,
   notify,
@@ -279,6 +281,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
         body: JSON.stringify({
           customer_name: cleanName,
           customer_phone: cleanPhone,
+          preferred_barber_id: selectedWalkinBarber?.id,
           barber_id: selectedWalkinBarber?.id,
           booking_preference: 'SPECIFIC_STAFF',
           booking_type: 'WALK_IN',
@@ -318,6 +321,10 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
     if (res.ok) {
       await onRefresh();
       notify('success', 'Shop UPI ID saved!');
+    } else {
+      const err = await res.json().catch(() => ({}));
+      notify('error', err.error || 'UPI ID sirf Malik Settings se save kar sakte hain');
+      if (res.status === 401) onOpenLogin();
     }
   };
 
@@ -901,7 +908,7 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                 {/* Real Scannable UPI QR Card */}
                 {payMode === 'UPI' && (
                   <div className="sb-card p-4 space-y-3">
-                    {!data.settings.upi_id && (
+                    {!data.settings.upi_id && canSwitchToOwner && (
                       <div className="flex gap-2">
                         <input
                           type="text"
@@ -1026,42 +1033,48 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                 More
               </h1>
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                Malik, Staff ya Customer screen par jayein
+                {canSwitchToOwner
+                  ? 'Malik, Staff ya Customer screen par jayein'
+                  : 'Counter account options aur logout'}
               </p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => onSwitchRole('MALIK')}
-                className="sb-card p-4 text-left flex items-center gap-3 hover:border-[#6C3BF5]/50"
-              >
-                <div className="w-10 h-10 rounded-xl bg-purple-100 text-[#6C3BF5] flex items-center justify-center">
-                  <TrendingUp className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="text-sm font-extrabold text-[#141028] dark:text-white">
-                    Malik (Roz ki kamai)
-                  </div>
-                  <div className="text-xs text-slate-500">Kamai, Staff Commission, Settings</div>
-                </div>
-              </button>
+              {canSwitchToOwner && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onSwitchRole('MALIK')}
+                    className="sb-card p-4 text-left flex items-center gap-3 hover:border-[#6C3BF5]/50"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-purple-100 text-[#6C3BF5] flex items-center justify-center">
+                      <TrendingUp className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-extrabold text-[#141028] dark:text-white">
+                        Malik (Roz ki kamai)
+                      </div>
+                      <div className="text-xs text-slate-500">Kamai, Staff Commission, Settings</div>
+                    </div>
+                  </button>
 
-              <button
-                type="button"
-                onClick={() => onSwitchRole('STAFF')}
-                className="sb-card p-4 text-left flex items-center gap-3 hover:border-[#6C3BF5]/50"
-              >
-                <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-600 flex items-center justify-center">
-                  <UserCheck className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="text-sm font-extrabold text-[#141028] dark:text-white">
-                    Staff Screen
-                  </div>
-                  <div className="text-xs text-slate-500">Chair queue & Customer History</div>
-                </div>
-              </button>
+                  <button
+                    type="button"
+                    onClick={() => onSwitchRole('STAFF')}
+                    className="sb-card p-4 text-left flex items-center gap-3 hover:border-[#6C3BF5]/50"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-600 flex items-center justify-center">
+                      <UserCheck className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-extrabold text-[#141028] dark:text-white">
+                        Staff Screen
+                      </div>
+                      <div className="text-xs text-slate-500">Chair queue & Customer History</div>
+                    </div>
+                  </button>
+                </>
+              )}
 
               {!isShopApk && (
                 <button

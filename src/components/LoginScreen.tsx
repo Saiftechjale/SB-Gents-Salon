@@ -1,16 +1,23 @@
-import React, { useRef, useState } from 'react';
-import { ArrowRight, Lock, Scissors, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { ArrowRight, Eye, EyeOff, Lock, Scissors, ShieldCheck, User, X } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 
 export type AppPortalRole = 'CUSTOMER' | 'RECEPTION' | 'STAFF' | 'MALIK';
 
 interface LoginScreenProps {
   salonName: string;
+  needsOwnerSetup?: boolean;
   hideAdminRoles?: boolean;
   allowedRoles?: AppPortalRole[];
   initialRole?: AppPortalRole;
   initialPhone?: string;
-  onSuccess: (role: AppPortalRole, phone?: string, staffId?: string, token?: string) => void;
+  onSuccess: (
+    role: AppPortalRole,
+    phone?: string,
+    staffId?: string,
+    token?: string,
+    displayName?: string
+  ) => void;
   onClose?: () => void;
 }
 
@@ -21,8 +28,12 @@ const ALL_PORTAL_ROLES: { id: AppPortalRole; label: string }[] = [
   { id: 'MALIK', label: 'Malik' },
 ];
 
+const INDIAN_MOBILE_RE = /^[6-9]\d{9}$/;
+const PIN_RE = /^\d{4,6}$/;
+
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   salonName,
+  needsOwnerSetup = false,
   hideAdminRoles = false,
   allowedRoles,
   initialRole = 'CUSTOMER',
@@ -39,15 +50,29 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       : initialRole;
 
   const [selectedRole, setSelectedRole] = useState<AppPortalRole>(safeInitialRole);
-  const [phone, setPhone] = useState<string>(initialPhone);
-  const [digits, setDigits] = useState<string[]>(['', '', '', '']);
+  const [customerMode, setCustomerMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
+
+  const [phone, setPhone] = useState<string>(() =>
+    initialPhone.replace(/\D/g, '').slice(-10)
+  );
+  const [pin, setPin] = useState<string>('');
+  const [showPin, setShowPin] = useState<boolean>(false);
+
+  // Customer registration name
+  const [customerName, setCustomerName] = useState<string>('');
+
+  // First-time Malik setup fields
+  const [setupSalonName, setSetupSalonName] = useState<string>(salonName || 'My Salon');
+  const [setupOwnerName, setSetupOwnerName] = useState<string>('');
+
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [logoTapCount, setLogoTapCount] = useState<number>(0);
   const [adminUnlockedInModal, setAdminUnlockedInModal] = useState<boolean>(
     () => !isStrictCustomerOnly && (!hideAdminRoles || safeInitialRole !== 'CUSTOMER')
   );
-  const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
+
+  const isOwnerSetupView = needsOwnerSetup && selectedRole === 'MALIK';
 
   const handleLogoTap = () => {
     if (isStrictCustomerOnly || adminUnlockedInModal) return;
@@ -59,81 +84,175 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   };
 
-  const handleDigitChange = (idx: number, val: string) => {
-    const clean = val.replace(/\D/g, '');
-    if (!clean) {
-      const next = [...digits];
-      next[idx] = '';
-      setDigits(next);
-      return;
-    }
-    if (clean.length > 1) {
-      const chars = clean.slice(0, 4).split('');
-      const next = [...digits];
-      chars.forEach((c, i) => {
-        if (idx + i < 4) next[idx + i] = c;
-      });
-      setDigits(next);
-      const focusIdx = Math.min(3, idx + chars.length);
-      inputRefs.current[focusIdx]?.focus();
-      return;
-    }
-    const next = [...digits];
-    next[idx] = clean;
-    setDigits(next);
-    if (idx < 3) {
-      inputRefs.current[idx + 1]?.focus();
-    }
-  };
-
-  const handleDigitKeyDown = (idx: number, e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Backspace' && !digits[idx] && idx > 0) {
-      inputRefs.current[idx - 1]?.focus();
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-    const code = digits.join('');
+    const cleanPin = pin.trim();
 
-    if (selectedRole === 'CUSTOMER') {
-      if (cleanPhone && cleanPhone.length < 10) {
-        setError('10 अंकों का सही मोबाइल नंबर डालें');
+    // 1. First-Time Commercial Owner Setup
+    if (isOwnerSetupView) {
+      if (setupSalonName.trim().length < 2 || setupOwnerName.trim().length < 2) {
+        setError('Salon ka naam aur Malik ka naam daalein');
         return;
       }
-      if (cleanPhone) {
-        localStorage.setItem('sb_customer_phone', cleanPhone);
+      if (!INDIAN_MOBILE_RE.test(cleanPhone)) {
+        setError('Apna real 10-digit Indian mobile number (6-9 se shuru) daalein');
+        return;
       }
-      onSuccess('CUSTOMER', cleanPhone || undefined);
+      if (!PIN_RE.test(cleanPin)) {
+        setError('4 se 6 digit ka Secret PIN banayein');
+        return;
+      }
+      if (['1234', '0000', '1111', '2222', '9999'].includes(cleanPin)) {
+        setError('Aasan PIN (1234/0000) na rakhein, apna alag PIN chunein');
+        return;
+      }
+
+      setSubmitting(true);
+      try {
+        const res = await apiFetch('/api/auth/setup-owner', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            salonName: setupSalonName.trim(),
+            ownerName: setupOwnerName.trim(),
+            phone: cleanPhone,
+            pin: cleanPin,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.verified) {
+          setError(json.error || 'Owner setup nahi ho paya');
+          return;
+        }
+        onSuccess('MALIK', cleanPhone, undefined, json.token, setupOwnerName.trim());
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
 
-    if (cleanPhone.length !== 10) {
-      setError('अपना रजिस्टर्ड 10-अंकों का मोबाइल नंबर डालें');
+    // 2. Customer Real Mobile + PIN Login / Registration
+    if (selectedRole === 'CUSTOMER') {
+      if (!INDIAN_MOBILE_RE.test(cleanPhone)) {
+        setError('Apna real 10-digit mobile number (6-9 se shuru) daalein');
+        return;
+      }
+      if (!PIN_RE.test(cleanPin)) {
+        setError('4 se 6 digit ka Secret PIN daalein');
+        return;
+      }
+
+      if (customerMode === 'REGISTER') {
+        const cleanName = customerName.trim();
+        if (cleanName.length < 2) {
+          setError('Apna naam daalein (kam se kam 2 akshar)');
+          return;
+        }
+
+        setSubmitting(true);
+        try {
+          const res = await apiFetch('/api/auth/customer/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: cleanName,
+              phone: cleanPhone,
+              pin: cleanPin,
+            }),
+          });
+          const json = await res.json();
+          if (!res.ok || !json.verified) {
+            setError(json.error || 'Account nahi ban paya');
+            return;
+          }
+          onSuccess(
+            'CUSTOMER',
+            cleanPhone,
+            undefined,
+            json.token,
+            json.customer?.name || cleanName
+          );
+        } catch (err) {
+          setError(String(err));
+        } finally {
+          setSubmitting(false);
+        }
+        return;
+      }
+
+      // Customer LOGIN
+      setSubmitting(true);
+      try {
+        const res = await apiFetch('/api/auth/customer/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phone: cleanPhone,
+            pin: cleanPin,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.verified) {
+          if (json.needsRegister) {
+            setCustomerMode('REGISTER');
+          }
+          setError(json.error || 'Mobile number ya PIN galat hai');
+          return;
+        }
+        onSuccess(
+          'CUSTOMER',
+          cleanPhone,
+          undefined,
+          json.token,
+          json.customer?.name
+        );
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
 
-    if (code.length < 4) {
-      setError('4 अंकों का Secret PIN डालें');
+    // 3. Strictly Separated Staff / Reception / Malik Verification
+    if (!INDIAN_MOBILE_RE.test(cleanPhone)) {
+      setError('Apna registered 10-digit mobile number daalein');
+      return;
+    }
+    if (!PIN_RE.test(cleanPin)) {
+      setError('4 se 6 digit ka Secret PIN daalein');
       return;
     }
 
     setSubmitting(true);
     try {
-      const apiRole = selectedRole === 'STAFF' ? 'STAFF' : 'OWNER';
+      const apiRole =
+        selectedRole === 'STAFF'
+          ? 'STAFF'
+          : selectedRole === 'RECEPTION'
+          ? 'RECEPTION'
+          : 'OWNER';
       const res = await apiFetch('/api/auth/verify-pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: apiRole, phone: cleanPhone, pin: code }),
+        body: JSON.stringify({ role: apiRole, phone: cleanPhone, pin: cleanPin }),
       });
       const json = await res.json();
       if (!res.ok || !json.verified) {
-        setError(json.error || 'रजिस्टर्ड मोबाइल नंबर या PIN गलत है');
+        setError(json.error || 'Registered mobile number ya PIN galat hai');
         return;
       }
-      onSuccess(selectedRole, cleanPhone, json.staffId, json.token);
+      onSuccess(
+        selectedRole,
+        cleanPhone,
+        json.staffId,
+        json.token,
+        json.staffName || json.receptionName
+      );
     } catch (err) {
       setError(String(err));
     } finally {
@@ -151,7 +270,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   return (
     <div className="min-h-screen bg-[#F8F7FC] dark:bg-slate-950 flex flex-col items-center justify-center p-5 relative">
-      {onClose && (
+      {onClose && !needsOwnerSetup && (
         <button
           type="button"
           onClick={onClose}
@@ -162,72 +281,175 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         </button>
       )}
 
-      <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-6">
-        <div className="text-center space-y-3">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-5">
+        <div className="text-center space-y-2.5">
           <button
             type="button"
             onClick={handleLogoTap}
-            className="w-20 h-20 rounded-3xl sb-gradient flex items-center justify-center mx-auto shadow-xl shadow-purple-500/25 focus:outline-none active:scale-95 transition-transform"
+            className="w-18 h-18 rounded-3xl sb-gradient flex items-center justify-center mx-auto shadow-xl shadow-purple-500/25 focus:outline-none active:scale-95 transition-transform"
             aria-label={salonName}
           >
-            <Scissors className="w-10 h-10 text-white" />
+            {isOwnerSetupView ? (
+              <ShieldCheck className="w-9 h-9 text-white" />
+            ) : (
+              <Scissors className="w-9 h-9 text-white" />
+            )}
           </button>
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-[#141028] dark:text-white">
-              {salonName}
+              {isOwnerSetupView ? 'Malik Account Setup' : salonName}
             </h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-              Login karein
+            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+              {isOwnerSetupView
+                ? 'Pehli baar app setup karein — apna real number aur PIN banayein'
+                : selectedRole === 'CUSTOMER'
+                ? customerMode === 'REGISTER'
+                  ? 'Naya Customer Account banayein'
+                  : 'Apne mobile aur PIN se login karein'
+                : `${selectedRole} Portal Login`}
             </p>
           </div>
         </div>
 
-        <div className="space-y-2">
+        {/* Customer Login / Register Segmented Toggle */}
+        {selectedRole === 'CUSTOMER' && !isOwnerSetupView && (
+          <div className="grid grid-cols-2 gap-1 bg-slate-200/75 dark:bg-slate-900 p-1 rounded-2xl">
+            <button
+              type="button"
+              onClick={() => {
+                setCustomerMode('LOGIN');
+                setError('');
+              }}
+              className={`py-2.5 rounded-xl text-xs font-extrabold transition-all min-h-[44px] whitespace-nowrap ${
+                customerMode === 'LOGIN'
+                  ? 'bg-white dark:bg-slate-800 text-[#141028] dark:text-white shadow-sm'
+                  : 'text-slate-500'
+              }`}
+            >
+              Login Karein
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCustomerMode('REGISTER');
+                setError('');
+              }}
+              className={`py-2.5 rounded-xl text-xs font-extrabold transition-all min-h-[44px] whitespace-nowrap ${
+                customerMode === 'REGISTER'
+                  ? 'bg-white dark:bg-slate-800 text-[#141028] dark:text-white shadow-sm'
+                  : 'text-slate-500'
+              }`}
+            >
+              Naya Account
+            </button>
+          </div>
+        )}
+
+        {/* First-time Owner Setup Fields */}
+        {isOwnerSetupView && (
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="block text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                SALON KA NAAM
+              </label>
+              <input
+                type="text"
+                required
+                value={setupSalonName}
+                onChange={(e) => setSetupSalonName(e.target.value)}
+                placeholder="e.g. Royal Gents Salon"
+                className="sb-card w-full px-4 py-3 text-sm font-bold text-[#141028] dark:text-white focus:outline-none"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                MALIK KA NAAM
+              </label>
+              <input
+                type="text"
+                required
+                value={setupOwnerName}
+                onChange={(e) => setSetupOwnerName(e.target.value)}
+                placeholder="Aapka poora naam"
+                className="sb-card w-full px-4 py-3 text-sm font-bold text-[#141028] dark:text-white focus:outline-none"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Customer Registration Name */}
+        {selectedRole === 'CUSTOMER' && customerMode === 'REGISTER' && !isOwnerSetupView && (
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+              <User className="w-3 h-3 text-[#6C3BF5]" />
+              <span>AAPKA NAAM</span>
+            </label>
+            <input
+              type="text"
+              required
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              placeholder="Apna naam likhein"
+              className="sb-card w-full px-4 py-3.5 text-base font-bold text-[#141028] dark:text-white focus:outline-none"
+            />
+          </div>
+        )}
+
+        {/* Mobile Number */}
+        <div className="space-y-1.5">
           <label className="block text-[11px] font-bold tracking-wider text-slate-500 uppercase">
-            {selectedRole === 'CUSTOMER' ? 'MOBILE NUMBER' : 'REGISTERED MOBILE NUMBER'}
+            {selectedRole === 'CUSTOMER' ? 'REAL MOBILE NUMBER' : 'REGISTERED MOBILE NUMBER'}
           </label>
           <div className="sb-card flex items-center gap-2 px-4 py-3.5">
             <span className="text-base font-bold text-slate-500">+91</span>
             <input
               type="tel"
               inputMode="numeric"
+              maxLength={10}
+              required
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
+              onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
               placeholder="98XXX XX210"
               className="w-full bg-transparent text-base font-bold text-[#141028] dark:text-white focus:outline-none tabular-nums"
             />
           </div>
         </div>
 
-        {selectedRole !== 'CUSTOMER' && (
-          <div className="space-y-2">
-            <label className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
-              <Lock className="w-3 h-3 text-[#6C3BF5]" />
-              <span>SECRET PIN</span>
-            </label>
-            <div className="grid grid-cols-4 gap-3">
-              {digits.map((d, idx) => (
-                <input
-                  key={idx}
-                  ref={(el) => {
-                    inputRefs.current[idx] = el;
-                  }}
-                  type="password"
-                  inputMode="numeric"
-                  maxLength={4}
-                  value={d}
-                  onChange={(e) => handleDigitChange(idx, e.target.value)}
-                  onKeyDown={(e) => handleDigitKeyDown(idx, e)}
-                  placeholder="•"
-                  className="h-14 rounded-2xl bg-white dark:bg-slate-900 border-2 border-[#6C3BF5]/25 focus:border-[#6C3BF5] text-center text-2xl font-extrabold text-[#141028] dark:text-white shadow-sm focus:outline-none transition-colors tabular-nums"
-                />
-              ))}
-            </div>
+        {/* Secret PIN (4-6 digits) */}
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+            <Lock className="w-3 h-3 text-[#6C3BF5]" />
+            <span>
+              {selectedRole === 'CUSTOMER' && customerMode === 'REGISTER'
+                ? 'NAYA SECRET PIN BANAYEIN (4-6 DIGITS)'
+                : 'SECRET PIN (4-6 DIGITS)'}
+            </span>
+          </label>
+          <div className="sb-card flex items-center gap-2 px-4 py-3">
+            <input
+              type={showPin ? 'text' : 'password'}
+              inputMode="numeric"
+              maxLength={6}
+              required
+              value={pin}
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="••••"
+              className="w-full bg-transparent text-xl font-extrabold tracking-[0.35em] text-[#141028] dark:text-white focus:outline-none tabular-nums"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPin((v) => !v)}
+              className="p-2 text-slate-400 hover:text-[#6C3BF5]"
+              aria-label={showPin ? 'Hide PIN' : 'Show PIN'}
+            >
+              {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
           </div>
-        )}
+        </div>
 
+        {/* Role Selector */}
         {roles.length > 1 && (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <label className="block text-[11px] font-bold tracking-wider text-slate-500 uppercase">
               AAP KAUN HO?
             </label>
@@ -240,10 +462,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     type="button"
                     onClick={() => {
                       setSelectedRole(r.id);
-                      setDigits(['', '', '', '']);
+                      setPin('');
                       setError('');
                     }}
-                    className={`py-2.5 px-2 rounded-xl text-xs font-bold transition-all min-h-[42px] whitespace-nowrap ${
+                    className={`py-2.5 px-2 rounded-xl text-xs font-bold transition-all min-h-[44px] whitespace-nowrap ${
                       active
                         ? 'bg-[#6C3BF5] text-white shadow-md shadow-purple-500/25'
                         : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-[#6C3BF5]/50'
@@ -268,14 +490,30 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           disabled={submitting}
           className="w-full py-4 rounded-2xl sb-gradient text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 active:scale-[0.99] transition-transform disabled:opacity-60 min-h-[52px]"
         >
-          <span>{submitting ? 'Loading...' : 'Login'}</span>
+          <span>
+            {submitting
+              ? 'Loading...'
+              : isOwnerSetupView
+              ? 'Salon Setup Complete Karein'
+              : selectedRole === 'CUSTOMER' && customerMode === 'REGISTER'
+              ? 'Account Banayein & Login Karein'
+              : 'Login'}
+          </span>
           <ArrowRight className="w-5 h-5" />
         </button>
 
         <p className="text-center text-xs text-slate-500 dark:text-slate-400">
-          {selectedRole === 'CUSTOMER'
-            ? 'Slot book aur live number dekhne ke liye'
-            : 'Registered number aur Secret PIN zaroori hai'}
+          {isOwnerSetupView
+            ? 'Setup ke baad aap Staff aur Reception ke login bana sakte hain'
+            : selectedRole === 'CUSTOMER'
+            ? customerMode === 'LOGIN'
+              ? 'PIN bhool gaye? Salon Malik se naya PIN reset karwayein.'
+              : 'Aapka account seedhe Salon Malik ko dikhega aur slot book hoga.'
+            : selectedRole === 'RECEPTION'
+            ? 'Receptionist ka mobile & PIN sirf Malik banate hain'
+            : selectedRole === 'STAFF'
+            ? 'Har staff ka apna alag mobile number aur PIN hota hai'
+            : 'Sirf Salon Malik ke registered number aur PIN se khulega'}
         </p>
       </form>
     </div>

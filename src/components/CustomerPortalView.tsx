@@ -5,14 +5,17 @@ import {
   Bell,
   Calendar,
   Check,
+  Clock,
   Home,
+  KeyRound,
   LogIn,
+  LogOut,
+  MapPin,
   MessageCircle,
   MessageSquare,
   Moon,
   QrCode,
   Receipt,
-  Scissors,
   Search,
   Sun,
   User,
@@ -31,11 +34,11 @@ import {
   buildCustomerReceiptRequestText,
   buildSmsUrl,
   buildWhatsAppUrl,
+  cleanPhone10,
 } from '../lib/messagingTemplates';
 import { buildUpiDeepLinks } from '../lib/upiIntent';
 import {
   cleanDisplayName,
-  daysSinceDate,
   formatServiceCombo,
   formatShortDate,
   formatSlot12h,
@@ -45,6 +48,7 @@ import {
   getServiceVisualTag,
   getSingleInitial,
   isSlotInPastForDate,
+  normalizeTimesInText12h,
 } from '../lib/salonUiHelpers';
 
 export type CustomerTab = 'HOME' | 'BOOKING' | 'QUEUE' | 'BILLING' | 'PROFILE';
@@ -56,10 +60,13 @@ interface CustomerPortalViewProps {
   darkMode: boolean;
   setDarkMode: (dark: boolean) => void;
   initialPhone?: string;
+  initialName?: string;
   isCustomerApk?: boolean;
+  isCustomerLoggedIn?: boolean;
   onRefresh: () => Promise<void>;
   notify: (type: 'success' | 'error', message: string) => void;
   onOpenLogin: () => void;
+  onLogout?: () => void;
 }
 
 export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
@@ -69,12 +76,15 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   darkMode,
   setDarkMode,
   initialPhone,
+  initialName,
   isCustomerApk = false,
+  isCustomerLoggedIn = false,
   onRefresh,
   notify,
   onOpenLogin,
+  onLogout,
 }) => {
-  const [activeTab, setActiveTab] = useState<CustomerTab>('BOOKING');
+  const [activeTab, setActiveTab] = useState<CustomerTab>('HOME');
 
   const [customerPhone, setCustomerPhone] = useState<string>(
     () =>
@@ -83,7 +93,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
         .slice(-10)
   );
   const [customerName, setCustomerName] = useState<string>(
-    () => localStorage.getItem('sb_customer_name') || ''
+    () => initialName || localStorage.getItem('sb_customer_name') || ''
   );
 
   useEffect(() => {
@@ -92,6 +102,12 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       if (clean.length === 10) setCustomerPhone(clean);
     }
   }, [initialPhone]);
+
+  useEffect(() => {
+    if (initialName && initialName.trim()) {
+      setCustomerName(initialName.trim());
+    }
+  }, [initialName]);
 
   const activeServices = useMemo(
     () => data.services.filter((s) => s.is_active),
@@ -113,13 +129,6 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   const [selectedSlot, setSelectedSlot] = useState<string>('');
   const [showAllServices, setShowAllServices] = useState<boolean>(false);
   const [showAllSlots, setShowAllSlots] = useState<boolean>(false);
-  const [showGuestModal, setShowGuestModal] = useState<boolean>(false);
-  const [pendingSubmitOpts, setPendingSubmitOpts] = useState<{
-    serviceIds?: string[];
-    barberId?: string;
-    dateStr?: string;
-    slotTime?: string;
-  } | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [lastBookedId, setLastBookedId] = useState<string>(
     () => localStorage.getItem('sb_last_booking_id') || ''
@@ -129,8 +138,17 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   const [billingMode, setBillingMode] = useState<'CASH' | 'UPI'>('UPI');
   const [billingQrUrl, setBillingQrUrl] = useState<string>('');
 
-  // Quick-slot index on Reminder Screen 3
-  const [selectedQuickIdx, setSelectedQuickIdx] = useState<number>(0);
+  // Customer PIN Change form state in Profile
+  const [curPin, setCurPin] = useState<string>('');
+  const [newCustPin, setNewCustPin] = useState<string>('');
+  const [changingPin, setChangingPin] = useState<boolean>(false);
+
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, []);
 
   // Proximity alert tracker refs
   const proximityAlertSentRef = useRef<Set<string>>(new Set());
@@ -340,13 +358,50 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   }, [dayQueue, myTrackedBooking]);
 
   const estWaitMins = useMemo(() => {
-    if (!myTrackedBooking) return aheadBookings.length * 15;
-    if (myTrackedBooking.status === 'IN_PROGRESS') return 0;
-    if (myTrackedBooking.status === 'COMPLETED') return 0;
-    const avgPerPerson = 12;
-    const chairDivisor = Math.max(1, Math.min(2, activeBarbers.length));
-    return Math.max(5, Math.round(((aheadBookings.length + 1) * avgPerPerson) / chairDivisor));
-  }, [myTrackedBooking, aheadBookings.length, activeBarbers.length]);
+    if (!myTrackedBooking) {
+      return aheadBookings.length === 0
+        ? 0
+        : Math.round((aheadBookings.length * 15) / Math.max(1, activeBarbers.length));
+    }
+    if (myTrackedBooking.status === 'IN_PROGRESS' || myTrackedBooking.status === 'COMPLETED') {
+      return 0;
+    }
+
+    const [hStr, mStr] = (myTrackedBooking.slot_time || '09:00').split(':');
+    const slotTarget = new Date(`${myTrackedBooking.booking_date}T00:00:00`);
+    slotTarget.setHours(Number(hStr) || 0, Number(mStr) || 0, 0, 0);
+    const minsUntilSlot = Math.max(0, Math.round((slotTarget.getTime() - nowTick) / 60000));
+
+    const isSameBarberQueue =
+      myTrackedBooking.booking_preference === 'SPECIFIC_STAFF' ||
+      myTrackedBooking.booking_preference === 'OWNER_PREFERRED';
+
+    const relevantAhead = isSameBarberQueue
+      ? aheadBookings.filter((b) => b.barber_id === myTrackedBooking.barber_id)
+      : aheadBookings;
+
+    const barberBusyNow = isSameBarberQueue
+      ? dayQueue.some((b) => b.barber_id === myTrackedBooking.barber_id && b.status === 'IN_PROGRESS')
+      : activeChairs.length > 0 && activeChairs.every((ch) => Boolean(ch.inProgress));
+
+    const chairDivisor = isSameBarberQueue ? 1 : Math.max(1, activeBarbers.length);
+    const queueWorkMins =
+      relevantAhead.length > 0 || barberBusyNow
+        ? Math.round(((relevantAhead.length * 15) / chairDivisor) + (barberBusyNow ? 10 : 0))
+        : 0;
+
+    return Math.max(minsUntilSlot, queueWorkMins);
+  }, [myTrackedBooking, aheadBookings, dayQueue, activeChairs, activeBarbers.length, nowTick]);
+
+  const visibleQueue = useMemo(() => {
+    if (dayQueue.length <= 5) return dayQueue;
+    const priority = dayQueue.filter((b) => b.status === 'IN_PROGRESS' || b.status === 'WAITING');
+    const base = (priority.length > 0 ? priority : dayQueue).slice(0, 5);
+    if (myTrackedBooking && dayQueue.some((b) => b.id === myTrackedBooking.id) && !base.some((b) => b.id === myTrackedBooking.id)) {
+      return [...base.slice(0, 4), myTrackedBooking];
+    }
+    return base;
+  }, [dayQueue, myTrackedBooking]);
 
   // Token-isolated Hindi notifications for tracked booking
   const myTokenAlerts = useMemo(() => {
@@ -442,14 +497,14 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       notify('error', 'कृपया कोई उपलब्ध टाइम चुनें');
       return;
     }
-    if (!cleanName || cleanPhone.length < 10) {
-      setPendingSubmitOpts(opts || null);
-      setShowGuestModal(true);
+    if (!isCustomerLoggedIn || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      notify('error', 'Slot book karne ke liye pehle apne mobile number se Login ya Naya Account banayein');
+      onOpenLogin();
       return;
     }
 
     localStorage.setItem('sb_customer_phone', cleanPhone);
-    localStorage.setItem('sb_customer_name', cleanName);
+    if (cleanName) localStorage.setItem('sb_customer_name', cleanName);
     void requestNotificationPermission();
 
     const pref: BookingPreference =
@@ -465,8 +520,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customer_name: cleanName,
+          customer_name: cleanName || matchedCustomer?.name || 'Customer',
           customer_phone: cleanPhone,
+          preferred_barber_id: useBarberId === 'ANY' ? undefined : useBarberId,
           barber_id: useBarberId === 'ANY' ? undefined : useBarberId,
           booking_preference: pref,
           booking_type: 'ONLINE',
@@ -478,6 +534,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       const json = await res.json();
       if (!res.ok) {
         notify('error', json.error || 'बुकिंग नहीं हो सकी');
+        if (res.status === 401) {
+          onOpenLogin();
+        }
         return;
       }
       const created = json.booking as Booking;
@@ -494,7 +553,38 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
     }
   };
 
-  // Reminder / Last Visit Data for Screen 3
+  const handleChangeCustomerPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!/^\d{4,6}$/.test(curPin.trim()) || !/^\d{4,6}$/.test(newCustPin.trim())) {
+      notify('error', 'Purana aur naya 4 se 6 digit ka PIN daalein');
+      return;
+    }
+    setChangingPin(true);
+    try {
+      const res = await apiFetch('/api/auth/customer/pin', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_pin: curPin.trim(),
+          new_pin: newCustPin.trim(),
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        notify('error', json.error || 'PIN update nahi ho paya');
+        return;
+      }
+      setCurPin('');
+      setNewCustPin('');
+      notify('success', 'Aapka naya Secret PIN save ho gaya!');
+    } catch (err) {
+      notify('error', String(err));
+    } finally {
+      setChangingPin(false);
+    }
+  };
+
+  // Customer visit history
   const customerVisits = useMemo(() => {
     if (!matchedCustomer) return [];
     return data.serviceHistory
@@ -503,50 +593,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   }, [data.serviceHistory, matchedCustomer]);
 
   const lastVisit = customerVisits[0] || null;
-  const daysSinceLast = lastVisit
-    ? daysSinceDate(lastVisit.visit_date)
-    : matchedCustomer?.last_visit_date
-    ? daysSinceDate(matchedCustomer.last_visit_date)
-    : 0;
-
-  const quickSlots = useMemo(() => {
-    const picks: { label: string; dateStr: string; slotTime: string }[] = [];
-    for (let i = 0; i < 3; i++) {
-      const d = dateStrip[Math.min(i + (i === 0 ? 1 : 0), dateStrip.length - 1)] || dateStrip[0];
-      const preferred =
-        enabledSlots.find(
-          (s) =>
-            Number(s.slot_time.slice(0, 2)) >= (i === 0 ? 18 : i === 1 ? 11 : 17) &&
-            !isSlotInPastForDate(d.dateStr, s.slot_time) &&
-            !isSlotBookedForSelection(s.slot_time, d.dateStr, 'ANY')
-        ) || enabledSlots[0];
-      if (preferred) {
-        const dayTitle = i === 0 ? 'Kal' : d.topLabel;
-        picks.push({
-          label: `${dayTitle} ${formatSlot12h(preferred.slot_time).replace(':00 ', ' ')}`,
-          dateStr: d.dateStr,
-          slotTime: preferred.slot_time,
-        });
-      }
-    }
-    return picks;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateStrip, enabledSlots]);
-
   const featuredStylist =
     activeBarbers.find((b) => b.name === lastVisit?.barber_name) ||
     activeBarbers[0];
-
-  const featuredStylistName = cleanDisplayName(featuredStylist?.name) || 'Stylist';
-  const comboService =
-    activeServices.find((s) => s.name.toLowerCase().includes('haircut') && s.name.toLowerCase().includes('beard')) ||
-    null;
-  const specialServicesTitle = comboService
-    ? comboService.name
-    : formatServiceCombo(activeServices.slice(0, 2).map((s) => s.name)) || 'Haircut';
-  const specialServicesPrice = comboService
-    ? Number(comboService.price)
-    : activeServices.slice(0, 2).reduce((sum, s) => sum + Number(s.price), 0);
 
   const billingPreview = useMemo(() => {
     if (myTrackedBooking) {
@@ -688,174 +737,257 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       </header>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-1 space-y-4">
-        {/* SCREEN 3: HOME / REMINDER */}
-        {activeTab === 'HOME' && (
-          <div className="max-w-xl mx-auto space-y-3.5">
-            <div>
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#141028] dark:text-white">
-                Reminder
-              </h1>
-              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
-                Haircut ka time? App khud yaad dilaayega
-              </p>
-            </div>
+        {/* CLEAN SIMPLE HOME SCREEN */}
+        {activeTab === 'HOME' && (() => {
+          const displayCustomerName = matchedCustomer?.name || customerName.trim();
+          const waitingCount = dayQueue.filter((b) => b.status === 'WAITING').length;
+          const freeBarbersCount = activeBarbers.filter(
+            (b) => b.availability_status === 'Available'
+          ).length;
 
-            {/* Notification Preview Card */}
-            <div className="sb-card p-4 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg sb-gradient flex items-center justify-center text-white">
-                    <Scissors className="w-3.5 h-3.5" />
+          return (
+            <div className="max-w-xl mx-auto space-y-4">
+              {/* 1. Salon Welcome Header */}
+              <div className="space-y-1">
+                <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
+                  Namaste{isCustomerLoggedIn && displayCustomerName ? `, ${displayCustomerName}` : ''}
+                </h1>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  <span className="inline-flex items-center gap-1">
+                    <MapPin className="w-3.5 h-3.5 text-[#6C3BF5]" />
+                    <span>{data.salon.address || data.salon.name}</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1 tabular-nums">
+                    <Clock className="w-3.5 h-3.5 text-[#6C3BF5]" />
+                    <span>
+                      {formatSlot12h(data.settings.opening_time)} – {formatSlot12h(data.settings.closing_time)}
+                    </span>
+                  </span>
+                </div>
+              </div>
+
+              {/* 2. Single Primary Action / Live Status Hero Card */}
+              {!isCustomerLoggedIn ? (
+                <div className="sb-gradient rounded-3xl p-5 text-white shadow-xl shadow-purple-500/20 space-y-3">
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-extrabold tracking-wider uppercase text-white/80">
+                      {data.salon.name}
+                    </div>
+                    <div className="text-xl font-extrabold leading-snug">
+                      Bina line me lage apna slot book karein
+                    </div>
+                    <p className="text-xs text-white/85">
+                      Apne real mobile number se Login ya Naya Account banayein.
+                    </p>
                   </div>
-                  <span className="text-[11px] font-extrabold tracking-wider text-slate-600 dark:text-slate-300 uppercase">
-                    {data.salon.name}
-                  </span>
-                </div>
-                <span className="text-xs text-slate-400">abhi</span>
-              </div>
-              <div className="text-sm font-bold text-[#141028] dark:text-white">
-                {matchedCustomer
-                  ? `${matchedCustomer.name} ji, haircut ko ${daysSinceLast} din ho gaye ✂️`
-                  : customerName.trim()
-                  ? `${customerName.trim()} ji, fresh haircut ka slot book karein ✂️`
-                  : 'Aaj fresh haircut ka slot book karein ✂️'}
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Is hafte slot book karein? {featuredStylistName} free hai.
-              </p>
-            </div>
-
-            {/* Days Ring + Last Visit Card */}
-            <div className="sb-card p-4 flex items-center gap-4">
-              <div className="relative w-20 h-20 shrink-0 flex items-center justify-center">
-                <svg className="w-20 h-20 -rotate-90" viewBox="0 0 80 80">
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r="32"
-                    fill="none"
-                    stroke="currentColor"
-                    className="text-slate-200 dark:text-slate-800"
-                    strokeWidth="7"
-                  />
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r="32"
-                    fill="none"
-                    stroke="#EC4899"
-                    strokeWidth="7"
-                    strokeLinecap="round"
-                    strokeDasharray={`${Math.min(201, Math.max(48, (daysSinceLast || 20) * 6))} 201`}
-                  />
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                  <span className="text-lg font-extrabold text-[#EC4899] leading-none tabular-nums">
-                    {lastVisit ? daysSinceLast : 'AAJ'}
-                  </span>
-                  <span className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">
-                    {lastVisit ? 'DIN' : 'FREE'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="min-w-0 flex-1 space-y-1">
-                <div className="text-[11px] font-bold tracking-wider text-slate-400 uppercase">
-                  {lastVisit
-                    ? `PICHLI BAAR · ${formatShortDate(lastVisit.visit_date)}`
-                    : 'AAJ KA SPECIAL'}
-                </div>
-                <div className="text-base font-extrabold text-[#141028] dark:text-white leading-snug">
-                  {lastVisit?.services_summary || specialServicesTitle}
-                </div>
-                <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  {lastVisit
-                    ? `${cleanDisplayName(lastVisit.barber_name)} · ₹${lastVisit.total_bill}`
-                    : `${featuredStylistName} · ₹${specialServicesPrice}`}
-                </div>
-              </div>
-            </div>
-
-            {/* JALDI SLOT */}
-            <div className="space-y-2">
-              <div className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
-                JALDI SLOT
-              </div>
-              <div className="grid grid-cols-3 gap-2.5">
-                {quickSlots.map((qs, idx) => {
-                  const active = selectedQuickIdx === idx;
-                  return (
+                  <div className="grid grid-cols-2 gap-2.5 pt-1">
                     <button
-                      key={qs.label}
                       type="button"
-                      onClick={() => setSelectedQuickIdx(idx)}
-                      className={`py-2.5 px-2 rounded-2xl text-xs font-extrabold transition-all min-h-[42px] ${
-                        active
-                          ? 'bg-[#6C3BF5] text-white shadow-md shadow-purple-500/25'
-                          : 'bg-white dark:bg-slate-900 text-[#141028] dark:text-slate-200 border border-slate-200/80 dark:border-slate-800'
-                      }`}
+                      onClick={onOpenLogin}
+                      className="py-3 px-3 rounded-2xl bg-white text-[#141028] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 min-h-[44px] whitespace-nowrap"
                     >
-                      {qs.label}
+                      <LogIn className="w-4 h-4 text-[#6C3BF5]" />
+                      <span>Login / Account</span>
                     </button>
-                  );
-                })}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('BOOKING')}
+                      className="py-3 px-3 rounded-2xl bg-white/15 border border-white/25 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 min-h-[44px] whitespace-nowrap"
+                    >
+                      <span>Slot Dekhein</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ) : myTrackedBooking ? (
+                <div className="sb-gradient rounded-3xl p-5 text-white shadow-xl shadow-purple-500/20 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-extrabold tracking-wider uppercase text-white/80">
+                      AAPKI ACTIVE BOOKING
+                    </span>
+                    <span className="text-xs font-extrabold bg-white/20 px-2.5 py-1 rounded-full tabular-nums">
+                      Token #{myTrackedBooking.token_number}
+                    </span>
+                  </div>
+                  <div className="text-xl font-extrabold leading-snug">
+                    {myTrackedBooking.status === 'IN_PROGRESS'
+                      ? 'Aapka number aa gaya — Chair par pahunchein'
+                      : myTrackedBooking.status === 'COMPLETED'
+                      ? 'Aaj ki service poori ho gayi hai'
+                      : `Aapse pehle ${aheadBookings.length} log line me hain`}
+                  </div>
+                  <div className="text-xs font-semibold text-white/90">
+                    {myTrackedBooking.booking_date === todayStr
+                      ? 'Aaj'
+                      : formatShortDate(myTrackedBooking.booking_date)}{' '}
+                    · {formatSlot12h(myTrackedBooking.slot_time)} ·{' '}
+                    {cleanDisplayName(myTrackedBooking.barber_name).split(' ')[0]}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('QUEUE')}
+                    className="w-full py-3 rounded-2xl bg-white text-[#141028] font-extrabold text-sm flex items-center justify-center gap-2 min-h-[44px]"
+                  >
+                    <span>Live Queue Dekhein</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="sb-gradient rounded-3xl p-5 text-white shadow-xl shadow-purple-500/20 space-y-3">
+                  <div className="text-[11px] font-extrabold tracking-wider uppercase text-white/80">
+                    AAJ KA SALON STATUS
+                  </div>
+                  <div className="text-xl font-extrabold leading-snug">
+                    {waitingCount === 0
+                      ? 'Abhi salon khali hai — turant slot book karein'
+                      : `Abhi line me ${waitingCount} log · ${freeBarbersCount} stylists free`}
+                  </div>
+                  <p className="text-xs text-white/85">
+                    Apni pasand ki service aur stylist chunein, sahi time par aayein.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('BOOKING')}
+                    className="w-full py-3.5 rounded-2xl bg-white text-[#141028] font-extrabold text-sm flex items-center justify-center gap-2 min-h-[46px]"
+                  >
+                    <span>Slot Book Karein</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* 3. Services & Rate Card (Tap to book immediately) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xs font-extrabold tracking-wider text-slate-500 uppercase">
+                    SERVICES &amp; RATE LIST
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('BOOKING')}
+                    className="text-xs font-bold text-[#6C3BF5]"
+                  >
+                    Sab Dekhein
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {activeServices.slice(0, 6).map((srv) => {
+                    const visual = getServiceVisualTag(srv);
+                    const title = lang === 'hi' && srv.name_hi ? srv.name_hi : srv.name;
+                    return (
+                      <button
+                        key={srv.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedServiceIds([srv.id]);
+                          setActiveTab('BOOKING');
+                        }}
+                        className="sb-card p-3 text-left flex items-center gap-2.5 hover:border-[#6C3BF5]/50 transition-colors min-h-[64px]"
+                      >
+                        <div
+                          className={`w-9 h-9 rounded-xl ${visual.bg} flex items-center justify-center text-base shrink-0`}
+                        >
+                          {visual.symbol}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-extrabold text-[#141028] dark:text-white truncate">
+                            {title}
+                          </div>
+                          <div className="text-[11px] font-bold text-[#6C3BF5] tabular-nums mt-0.5">
+                            ₹{srv.price} · {srv.duration_minutes}m
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 4. Hamare Stylists */}
+              <div className="space-y-2">
+                <h2 className="text-xs font-extrabold tracking-wider text-slate-500 uppercase">
+                  HAMARE STYLISTS
+                </h2>
+                <div className="sb-card divide-y divide-slate-100 dark:divide-slate-800">
+                  {activeBarbers.map((barber, idx) => {
+                    const bName = cleanDisplayName(barber.name);
+                    const isAvail = barber.availability_status === 'Available';
+                    return (
+                      <button
+                        key={barber.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedBarberId(barber.id);
+                          setActiveTab('BOOKING');
+                        }}
+                        className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors min-h-[54px]"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className={`w-9 h-9 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${getAvatarColorClass(
+                              idx
+                            )}`}
+                          >
+                            {getSingleInitial(bName)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                              {bName}
+                            </div>
+                            <div className="text-[11px] text-slate-500 truncate">
+                              {barber.specialty || 'Salon Stylist'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-xs font-bold shrink-0">
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              isAvail ? 'bg-emerald-500' : 'bg-amber-500'
+                            }`}
+                          />
+                          <span className={isAvail ? 'text-emerald-600' : 'text-amber-600'}>
+                            {barber.availability_status}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 5. Direct Salon Contact */}
+              <div className="sb-card p-3.5 space-y-2">
+                <div className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                  SALON SE SEEDHA SAMPARK
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <a
+                    href={buildWhatsAppUrl(
+                      data.salon.phone,
+                      `Namaste ${data.salon.name}, mujhe booking ke baare me poochhna hai.`
+                    )}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-3 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[44px]"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    <span>WhatsApp</span>
+                  </a>
+                  <a
+                    href={buildSmsUrl(
+                      data.salon.phone,
+                      `Namaste ${data.salon.name}, mujhe slot booking chahiye.`
+                    )}
+                    className="py-3 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[44px]"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    <span>SMS Karein</span>
+                  </a>
+                </div>
               </div>
             </div>
-
-            {/* Wahi Stylist & Wahi Cut Summary Card */}
-            <div className="sb-card divide-y divide-slate-100 dark:divide-slate-800">
-              <div className="p-3.5 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-rose-100 text-rose-600 font-extrabold text-xs flex items-center justify-center shrink-0">
-                    {getSingleInitial(featuredStylistName)}
-                  </div>
-                  <span className="text-sm font-bold text-[#141028] dark:text-white truncate">
-                    Wahi stylist: {featuredStylistName}
-                  </span>
-                </div>
-                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-              </div>
-              <div className="p-3.5 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-purple-100 text-[#6C3BF5] text-sm flex items-center justify-center shrink-0">
-                    ✂️
-                  </div>
-                  <span className="text-sm font-bold text-[#141028] dark:text-white truncate">
-                    Wahi cut:{' '}
-                    {matchedCustomer?.haircut_preference ||
-                      lastVisit?.haircut_preference ||
-                      'Regular Fade + Beard'}
-                  </span>
-                </div>
-                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-              </div>
-            </div>
-
-            <button
-              type="button"
-              disabled={submitting}
-              onClick={() => {
-                const chosenSlot = quickSlots[selectedQuickIdx];
-                if (chosenSlot) {
-                  setSelectedDate(chosenSlot.dateStr);
-                  setSelectedSlot(chosenSlot.slotTime);
-                }
-                if (featuredStylist) {
-                  setSelectedBarberId(featuredStylist.id);
-                }
-                submitBooking({
-                  barberId: featuredStylist?.id || 'ANY',
-                  dateStr: chosenSlot?.dateStr || selectedDate,
-                  slotTime: chosenSlot?.slotTime || selectedSlot,
-                });
-              }}
-              className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 min-h-[48px]"
-            >
-              <span>Ek tap mein book karo</span>
-              <ArrowRight className="w-5 h-5" />
-            </button>
-          </div>
-        )}
+          );
+        })()}
 
         {/* SCREEN 1: BOOKING (Zero-scroll single-screen layout matching PDF Page 1) */}
         {activeTab === 'BOOKING' && (
@@ -965,6 +1097,41 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                       );
                     })}
                   </div>
+                  {selectedBarberObj && cleanPhone10(selectedBarberObj.phone).length === 10 && (() => {
+                    const barberShort = cleanDisplayName(selectedBarberObj.name).split(' ')[0];
+                    const quickDirectText = `Namaste ${barberShort} ji (${data.salon.name}), mujhe ${
+                      selectedServices.length > 0
+                        ? formatServiceCombo(selectedServices.map((s) => s.name))
+                        : 'salon service'
+                    } ke liye ${selectedDate === todayStr ? 'aaj' : formatShortDate(selectedDate)}${
+                      selectedSlot ? ` ${formatSlot12h(selectedSlot)}` : ''
+                    } ka slot chahiye.`;
+                    return (
+                      <div className="flex items-center justify-between gap-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 px-3 py-1.5 text-[11px]">
+                        <span className="font-bold text-slate-600 dark:text-slate-300 truncate">
+                          {barberShort}: {selectedBarberObj.availability_status}
+                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <a
+                            href={buildWhatsAppUrl(selectedBarberObj.phone, quickDirectText)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2 py-1 rounded-lg bg-emerald-600 text-white font-bold flex items-center gap-1"
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                            <span>WhatsApp</span>
+                          </a>
+                          <a
+                            href={buildSmsUrl(selectedBarberObj.phone, quickDirectText)}
+                            className="px-2 py-1 rounded-lg bg-sky-600 text-white font-bold flex items-center gap-1"
+                          >
+                            <MessageSquare className="w-3 h-3" />
+                            <span>SMS</span>
+                          </a>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -1150,12 +1317,21 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 </div>
                 <div className="text-xs sm:text-sm font-semibold text-white/90 truncate pt-1">
                   {myTrackedBooking
-                    ? `Aapka token #${myTrackedBooking.token_number} · ${
-                        myTrackedBooking.services?.map((s) => s.service_name).join(' + ') ||
-                        'Salon Service'
+                    ? `Token #${myTrackedBooking.token_number} · ${formatSlot12h(myTrackedBooking.slot_time)} · ${
+                        cleanDisplayName(myTrackedBooking.barber_name).split(' ')[0]
                       }`
                     : 'Apna slot book karein'}
                 </div>
+                {myTrackedBooking && (
+                  <div className="text-[11px] font-medium text-white/75 truncate">
+                    {myTrackedBooking.booking_date === todayStr
+                      ? 'Aaj'
+                      : formatShortDate(myTrackedBooking.booking_date)}{' '}
+                    ·{' '}
+                    {myTrackedBooking.services?.map((s) => s.service_name).join(' + ') ||
+                      'Salon Service'}
+                  </div>
+                )}
               </div>
 
               {/* Large Circular Progress Ring matching PDF Page 2 */}
@@ -1179,16 +1355,38 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                     strokeLinecap="round"
                     strokeDasharray={`${
                       estWaitMins === 0
-                        ? 60
-                        : Math.max(48, Math.min(200, 239 - estWaitMins * 3))
+                        ? 239
+                        : Math.max(48, Math.min(210, 239 - Math.min(estWaitMins, 180) * 1.1))
                     } 239`}
                   />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                  <span className="text-lg font-extrabold leading-none tabular-nums">
-                    ~{estWaitMins}
-                  </span>
-                  <span className="text-xs font-bold text-white/85 mt-0.5">min</span>
+                  {estWaitMins === 0 ? (
+                    <>
+                      <span className="text-base font-extrabold leading-none">
+                        {myTrackedBooking?.status === 'COMPLETED'
+                          ? 'Done'
+                          : myTrackedBooking?.status === 'IN_PROGRESS'
+                          ? 'Chair'
+                          : 'Ready'}
+                      </span>
+                      <span className="text-[10px] font-bold text-white/85 mt-0.5">0 min</span>
+                    </>
+                  ) : estWaitMins >= 60 ? (
+                    <>
+                      <span className="text-base font-extrabold leading-none tabular-nums">
+                        ~{Math.floor(estWaitMins / 60)}h {estWaitMins % 60}m
+                      </span>
+                      <span className="text-[10px] font-bold text-white/85 mt-0.5">baaki</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-lg font-extrabold leading-none tabular-nums">
+                        ~{estWaitMins}
+                      </span>
+                      <span className="text-xs font-bold text-white/85 mt-0.5">min</span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1256,7 +1454,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   </button>
                 </div>
               ) : (
-                dayQueue.slice(0, 5).map((item) => {
+                visibleQueue.map((item) => {
                   const isMine = myTrackedBooking?.id === item.id;
                   const statusLabel =
                     isMine && item.status === 'WAITING'
@@ -1281,7 +1479,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                       key={item.id}
                       className={`px-3.5 py-2.5 flex items-center justify-between gap-3 ${
                         isMine
-                          ? 'bg-[#FDF2F8] dark:bg-pink-950/25 shadow-[inset_4px_0_0_#EC4899]'
+                          ? 'bg-[#FDF2F8] dark:bg-pink-950/25 border-y border-pink-200/70 dark:border-pink-800/50'
                           : ''
                       }`}
                     >
@@ -1293,9 +1491,15 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                         >
                           #{item.token_number}
                         </span>
-                        <span className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
-                          {isMine ? 'Aap' : item.customer_name}
-                        </span>
+                        <div className="min-w-0">
+                          <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                            {isMine ? 'Aap' : item.customer_name}
+                          </div>
+                          <div className="text-[11px] font-semibold text-slate-400 truncate">
+                            {cleanDisplayName(item.barber_name).split(' ')[0]} ·{' '}
+                            {formatSlot12h(item.slot_time)}
+                          </div>
+                        </div>
                       </div>
                       <span
                         className={`px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 ${badgeClass}`}
@@ -1312,11 +1516,24 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
             <div className="rounded-2xl bg-[#EDE9FE] dark:bg-purple-950/40 px-3.5 py-3 flex items-center gap-2.5 text-xs font-bold text-[#5B21B6] dark:text-purple-200">
               <Bell className="w-4 h-4 text-amber-500 shrink-0" />
               <span className="leading-snug">
-                {myTokenAlerts[0]?.message || '1 log bachega tab WhatsApp / App Alert aayega'}
+                {myTokenAlerts[0]?.message
+                  ? normalizeTimesInText12h(myTokenAlerts[0].message)
+                  : '1 log bachega tab WhatsApp / App Alert aayega'}
               </span>
             </div>
 
             {myTrackedBooking && (() => {
+              const assignedBarber = data.staff.find((s) => s.id === myTrackedBooking.barber_id);
+              const barberPhone10 = cleanPhone10(assignedBarber?.phone);
+              const salonPhone10 = cleanPhone10(data.salon.phone);
+              const hasDirectStaffPhone =
+                Boolean(assignedBarber) &&
+                barberPhone10.length === 10 &&
+                barberPhone10 !== salonPhone10;
+              const barberShort = cleanDisplayName(
+                assignedBarber?.name || myTrackedBooking.barber_name
+              ).split(' ')[0];
+
               const bookingMsg = buildCustomerBookingToSalonText({
                 salonName: data.salon.name,
                 customerName: myTrackedBooking.customer_name,
@@ -1331,28 +1548,58 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 totalAmount: Number(myTrackedBooking.total_amount || 0),
               });
               return (
-                <div className="sb-card p-3 space-y-2">
-                  <div className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
-                    1-TAP SALON KO BHEJO
+                <div className="sb-card p-3 space-y-2.5">
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                      {hasDirectStaffPhone
+                        ? '1-TAP SALON KO BHEJO'
+                        : `1-TAP SALON / ${barberShort.toUpperCase()} KO BHEJO`}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <a
+                        href={buildWhatsAppUrl(data.salon.phone, bookingMsg)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                      >
+                        <MessageCircle className="w-4 h-4" />
+                        <span>Salon WhatsApp</span>
+                      </a>
+                      <a
+                        href={buildSmsUrl(data.salon.phone, bookingMsg)}
+                        className="py-2.5 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        <span>Salon SMS</span>
+                      </a>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <a
-                      href={buildWhatsAppUrl(data.salon.phone, bookingMsg)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
-                    >
-                      <MessageCircle className="w-4 h-4" />
-                      <span>WhatsApp Bhejo</span>
-                    </a>
-                    <a
-                      href={buildSmsUrl(data.salon.phone, bookingMsg)}
-                      className="py-2.5 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
-                    >
-                      <MessageSquare className="w-4 h-4" />
-                      <span>SMS Bhejo</span>
-                    </a>
-                  </div>
+
+                  {hasDirectStaffPhone && assignedBarber && (
+                    <div className="space-y-1.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                      <div className="text-[11px] font-extrabold tracking-wider text-[#6C3BF5] uppercase">
+                        SEEDHE STYLIST KO BHEJO ({cleanDisplayName(assignedBarber.name)})
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <a
+                          href={buildWhatsAppUrl(assignedBarber.phone, bookingMsg)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="py-2.5 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                        >
+                          <MessageCircle className="w-4 h-4" />
+                          <span>{barberShort} WhatsApp</span>
+                        </a>
+                        <a
+                          href={buildSmsUrl(assignedBarber.phone, bookingMsg)}
+                          className="py-2.5 rounded-xl bg-slate-800 dark:bg-slate-700 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                        >
+                          <MessageSquare className="w-4 h-4" />
+                          <span>{barberShort} SMS</span>
+                        </a>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -1543,170 +1790,169 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 Profile
               </h1>
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                Aapki details aur pichli visits
+                {isCustomerLoggedIn ? 'Aapka account aur pichli visits' : 'Login ya Naya Account banayein'}
               </p>
             </div>
 
-            <div className="sb-card p-5 space-y-4">
-              <div className="flex items-center gap-3.5">
-                <div className="w-12 h-12 rounded-2xl sb-gradient text-white font-extrabold text-lg flex items-center justify-center">
-                  {getSingleInitial(customerName || matchedCustomer?.name || 'C')}
+            {!isCustomerLoggedIn ? (
+              <div className="sb-card p-5 space-y-3">
+                <div className="text-base font-extrabold text-[#141028] dark:text-white">
+                  Apne mobile number se login karein
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-base font-extrabold text-[#141028] dark:text-white truncate">
-                    {matchedCustomer?.name || customerName || 'Guest Customer'}
-                  </div>
-                  <div className="text-xs text-slate-500 tabular-nums">
-                    {customerPhone ? `+91 ${customerPhone}` : 'Mobile number save karein'}
-                  </div>
-                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Slot book karne, live queue dekhne aur pichli visits track karne ke liye login zaroori hai.
+                </p>
+                <button
+                  type="button"
+                  onClick={onOpenLogin}
+                  className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-2 min-h-[48px]"
+                >
+                  <LogIn className="w-4 h-4" />
+                  <span>Login / Naya Account Banayein</span>
+                </button>
               </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-3">
-                  <div className="text-[11px] font-bold text-slate-400 uppercase">Total Visits</div>
-                  <div className="text-xl font-extrabold text-[#6C3BF5] tabular-nums">
-                    {matchedCustomer?.total_visits || customerVisits.length}
-                  </div>
-                </div>
-                <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-3">
-                  <div className="text-[11px] font-bold text-slate-400 uppercase">Saved Stylist</div>
-                  <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate mt-1">
-                    {cleanDisplayName(featuredStylist?.name).split(' ')[0] || 'Any'}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {customerVisits.length > 0 && (
-              <div className="sb-card p-4 space-y-2.5">
-                <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                  Pichli Visits
-                </div>
-                <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {customerVisits.slice(0, 5).map((v) => (
-                    <div key={v.id} className="py-2.5 flex items-center justify-between gap-2 text-xs">
-                      <div>
-                        <div className="font-bold text-[#141028] dark:text-white">
-                          {v.services_summary}
-                        </div>
-                        <div className="text-slate-400">
-                          {formatShortDate(v.visit_date)} · {cleanDisplayName(v.barber_name)}
-                        </div>
-                      </div>
-                      <span className="font-extrabold text-[#141028] dark:text-white tabular-nums">
-                        ₹{v.total_bill}
-                      </span>
+            ) : (
+              <>
+                <div className="sb-card p-5 space-y-4">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-12 h-12 rounded-2xl sb-gradient text-white font-extrabold text-lg flex items-center justify-center">
+                      {getSingleInitial(customerName || matchedCustomer?.name || 'C')}
                     </div>
-                  ))}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-base font-extrabold text-[#141028] dark:text-white truncate">
+                        {matchedCustomer?.name || customerName || 'Customer'}
+                      </div>
+                      <div className="text-xs text-slate-500 tabular-nums">
+                        {customerPhone ? `+91 ${customerPhone}` : 'Verified Account'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-3">
+                      <div className="text-[11px] font-bold text-slate-400 uppercase">Total Visits</div>
+                      <div className="text-xl font-extrabold text-[#6C3BF5] tabular-nums">
+                        {matchedCustomer?.total_visits || customerVisits.length}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-3">
+                      <div className="text-[11px] font-bold text-slate-400 uppercase">Saved Stylist</div>
+                      <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate mt-1">
+                        {cleanDisplayName(featuredStylist?.name).split(' ')[0] || 'Any'}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
+
+                {customerVisits.length > 0 && (
+                  <div className="sb-card p-4 space-y-2.5">
+                    <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                      Pichli Visits
+                    </div>
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {customerVisits.slice(0, 5).map((v) => (
+                        <div key={v.id} className="py-2.5 flex items-center justify-between gap-2 text-xs">
+                          <div>
+                            <div className="font-bold text-[#141028] dark:text-white">
+                              {v.services_summary}
+                            </div>
+                            <div className="text-slate-400">
+                              {formatShortDate(v.visit_date)} · {cleanDisplayName(v.barber_name)}
+                            </div>
+                          </div>
+                          <span className="font-extrabold text-[#141028] dark:text-white tabular-nums">
+                            ₹{v.total_bill}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Change Secret PIN */}
+                <form onSubmit={handleChangeCustomerPin} className="sb-card p-4 space-y-2.5">
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <KeyRound className="w-3.5 h-3.5 text-[#6C3BF5]" />
+                    <span>Apna Secret PIN Badlein</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={6}
+                      required
+                      value={curPin}
+                      onChange={(e) => setCurPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="Purana PIN"
+                      className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold tabular-nums"
+                    />
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={6}
+                      required
+                      value={newCustPin}
+                      onChange={(e) => setNewCustPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="Naya PIN (4-6 digits)"
+                      className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold tabular-nums"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={changingPin}
+                    className="w-full py-2.5 rounded-xl bg-[#141028] dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold min-h-[44px]"
+                  >
+                    {changingPin ? 'Saving...' : 'PIN Update Karein'}
+                  </button>
+                </form>
+              </>
             )}
 
-            {/* Settings & Role Switch */}
+            {/* App Settings & Session */}
             <div className="sb-card p-4 space-y-3">
               <div className="grid grid-cols-2 gap-2.5">
                 <button
                   type="button"
                   onClick={() => setLang(lang === 'en' ? 'hi' : 'en')}
-                  className="py-3 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-[#141028] dark:text-white"
+                  className="py-3 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-[#141028] dark:text-white min-h-[44px]"
                 >
                   Language: {lang === 'en' ? 'English / Hinglish' : 'हिन्दी'}
                 </button>
                 <button
                   type="button"
                   onClick={() => setDarkMode(!darkMode)}
-                  className="py-3 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-[#141028] dark:text-white flex items-center justify-center gap-1.5"
+                  className="py-3 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-[#141028] dark:text-white flex items-center justify-center gap-1.5 min-h-[44px]"
                 >
                   {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-[#6C3BF5]" />}
                   <span>{darkMode ? 'Light Mode' : 'Dark Mode'}</span>
                 </button>
               </div>
 
-              <button
-                type="button"
-                onClick={onOpenLogin}
-                className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-2"
-              >
-                <LogIn className="w-4 h-4" />
-                <span>{isCustomerApk ? 'Apna Number Badlein' : 'Login / Role Badlein'}</span>
-              </button>
+              {onLogout && (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="w-full py-3 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 font-extrabold text-sm flex items-center justify-center gap-2 min-h-[46px]"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Logout Karein</span>
+                </button>
+              )}
+
+              {!isCustomerApk && !data.settings.hide_staff_login && (
+                <button
+                  type="button"
+                  onClick={onOpenLogin}
+                  className="w-full py-2.5 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-slate-600 dark:text-slate-300 flex items-center justify-center gap-1.5 min-h-[42px]"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Staff / Malik Login</span>
+                </button>
+              )}
             </div>
           </div>
         )}
       </main>
-
-      {/* Compact Guest Info Modal when Name/Phone not yet saved */}
-      {showGuestModal && (
-        <div
-          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
-          onClick={() => setShowGuestModal(false)}
-        >
-          <form
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (!customerName.trim() || customerPhone.length < 10) {
-                notify('error', 'कृपया अपना नाम और 10 अंकों का मोबाइल नंबर डालें');
-                return;
-              }
-              setShowGuestModal(false);
-              const opts = pendingSubmitOpts || undefined;
-              setPendingSubmitOpts(null);
-              await submitBooking(opts);
-            }}
-            className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 p-5 space-y-4 shadow-2xl"
-          >
-            <div>
-              <h3 className="text-lg font-extrabold text-[#141028] dark:text-white">
-                Booking Confirm Karein
-              </h3>
-              <p className="text-xs text-slate-500">
-                Token aur live alert ke liye apna naam aur mobile daalein
-              </p>
-            </div>
-            <div className="space-y-2.5">
-              <input
-                type="text"
-                autoFocus
-                required
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                placeholder="आपका नाम"
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3.5 py-3 text-sm font-bold focus:outline-none focus:border-[#6C3BF5]"
-              />
-              <input
-                type="tel"
-                inputMode="numeric"
-                required
-                value={customerPhone}
-                onChange={(e) =>
-                  setCustomerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))
-                }
-                placeholder="मोबाइल नंबर"
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3.5 py-3 text-sm font-bold tabular-nums focus:outline-none focus:border-[#6C3BF5]"
-              />
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setShowGuestModal(false)}
-                className="px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={submitting}
-                className="flex-1 py-3 rounded-xl sb-gradient text-white text-sm font-extrabold flex items-center justify-center gap-1.5"
-              >
-                <span>Confirm</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
 
       {/* Fixed Bottom 5-Tab Bar (Home · Booking · Queue · Billing · Profile) */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800 grid grid-cols-5 h-14 pb-[env(safe-area-inset-bottom)]">
