@@ -925,7 +925,13 @@ function isAllowedCorsOrigin(origin: string, reqHost?: string): boolean {
   try {
     const parsed = new URL(origin);
     if (reqHost && parsed.host === reqHost) return true;
-    if (parsed.hostname.endsWith('.run.app')) return true;
+    if (
+      parsed.hostname.endsWith('.run.app') ||
+      parsed.hostname.endsWith('.pages.dev') ||
+      parsed.hostname.endsWith('.netlify.app')
+    ) {
+      return true;
+    }
     const extraAllowed = (process.env.ALLOWED_ORIGINS || '')
       .split(',')
       .map((s) => s.trim())
@@ -962,6 +968,11 @@ async function startServer() {
   });
   app.use(express.json({ limit: '4mb' }));
   app.use('/uploads', express.static(UPLOADS_DIR));
+
+  // Lightweight health check for uptime monitors (keeps server awake with minimal bandwidth)
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({ ok: true, status: 'active' });
+  });
 
   // Realtime SSE endpoint
   app.get('/api/events', (req: Request, res: Response) => {

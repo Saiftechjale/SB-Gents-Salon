@@ -8,8 +8,8 @@ import {
   apiUrl,
   isPhoneOfflineMode,
   setAuthToken,
-  setPhoneOfflineMode,
 } from './lib/api';
+import { handleLocalApiRequest } from './lib/localApiEngine';
 import { supabase } from './lib/supabase';
 import {
   cacheSalonStateLocally,
@@ -127,12 +127,8 @@ export default function App() {
       const cached = await getCachedSalonState();
       if (cached) {
         setData(cached);
-        setPhoneOfflineMode(true);
-        setPhoneOfflineModeState(true);
       } else {
-        setPhoneOfflineMode(true);
-        setPhoneOfflineModeState(true);
-        const localRes = await apiFetch('/api/bootstrap');
+        const localRes = await handleLocalApiRequest('/api/bootstrap');
         if (localRes.ok) {
           const localJson = (await localRes.json()) as SalonBootstrapData;
           setData(localJson);
@@ -188,6 +184,7 @@ export default function App() {
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
+      fetchBootstrapData();
       syncPendingOfflineDrafts();
     };
     const handleOffline = () => setIsOnline(false);

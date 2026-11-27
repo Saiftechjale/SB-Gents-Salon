@@ -248,6 +248,8 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     const isLocalOrigin = (url: string) =>
       /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url);
     if (saved && !isLocalOrigin(saved)) return saved;
+    const apiBase = getApiBaseUrl();
+    if (apiBase && !isLocalOrigin(apiBase)) return apiBase;
     if (
       typeof window !== 'undefined' &&
       window.location.origin.startsWith('http') &&

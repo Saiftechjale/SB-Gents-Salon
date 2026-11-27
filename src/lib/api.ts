@@ -2,8 +2,10 @@ import { handleLocalApiRequest } from './localApiEngine';
 
 const API_BASE_KEY = 'sb_api_base_url';
 const LOCAL_MODE_KEY = 'sb_local_mode';
+export const DEFAULT_LIVE_API_URL = 'https://sb-gents-salon.onrender.com';
 
 let inMemoryAuthToken: string | null = null;
+let detectedStaticHostFallback = false;
 
 export function setAuthToken(token: string | null): void {
   inMemoryAuthToken = token && token.trim() ? token.trim() : null;
@@ -30,13 +32,29 @@ export function isCapacitorApp(): boolean {
   return false;
 }
 
+export function isStaticFrontendHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (detectedStaticHostFallback) return true;
+  const host = window.location.hostname.toLowerCase();
+  return (
+    host.endsWith('.pages.dev') ||
+    host.endsWith('.netlify.app') ||
+    host.endsWith('.github.io') ||
+    host.endsWith('.workers.dev')
+  );
+}
+
 export function getApiBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const saved = localStorage.getItem(API_BASE_KEY);
     if (saved && saved.trim()) return normalizeBaseUrl(saved);
   }
   const envBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
-  return envBase ? normalizeBaseUrl(envBase) : '';
+  if (envBase) return normalizeBaseUrl(envBase);
+  if (isCapacitorApp() || isStaticFrontendHost()) {
+    return DEFAULT_LIVE_API_URL;
+  }
+  return '';
 }
 
 export function setApiBaseUrl(url: string): void {
@@ -49,8 +67,13 @@ export function setApiBaseUrl(url: string): void {
   }
 }
 
+export function isStandaloneApkMode(): boolean {
+  return isCapacitorApp() && !getApiBaseUrl();
+}
+
 export function isPhoneOfflineMode(): boolean {
   if (typeof window === 'undefined') return false;
+  if (isStandaloneApkMode()) return true;
   return localStorage.getItem(LOCAL_MODE_KEY) === '1';
 }
 
@@ -79,12 +102,15 @@ export async function apiFetch(
   }
   const nextInit = { ...init, headers: mergedHeaders };
 
-  if (isPhoneOfflineMode() && path.startsWith('/api/')) {
+  if ((isPhoneOfflineMode() || isStandaloneApkMode()) && path.startsWith('/api/')) {
     return handleLocalApiRequest(path, nextInit);
   }
 
-  const targetUrl = apiUrl(path);
-  const timeoutMs = init?.timeoutMs ?? (path === '/api/bootstrap' ? 7500 : 15000);
+  const base = getApiBaseUrl();
+  const targetUrl = path.startsWith('/') && base ? `${base}${path}` : path;
+  const isRemote = /^https?:\/\//i.test(targetUrl);
+  const timeoutMs =
+    init?.timeoutMs ?? (path === '/api/bootstrap' ? (isRemote ? 45000 : 12000) : 20000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -95,9 +121,20 @@ export async function apiFetch(
       signal: init?.signal || controller.signal,
     });
 
-    // Guard against Capacitor / static-host SPA fallback returning index.html for /api/*
+    // Guard against static-host SPA fallback returning index.html for /api/*
     const ct = res.headers.get('content-type') || '';
     if (path.startsWith('/api/') && ct.includes('text/html')) {
+      if (!base && !isCapacitorApp()) {
+        detectedStaticHostFallback = true;
+        const fallbackRes = await fetch(`${DEFAULT_LIVE_API_URL}${path}`, {
+          ...fetchInit,
+          signal: init?.signal || controller.signal,
+        });
+        const fallbackCt = fallbackRes.headers.get('content-type') || '';
+        if (!fallbackCt.includes('text/html')) {
+          return fallbackRes;
+        }
+      }
       throw new Error('Server API not available at this address (received HTML instead of JSON)');
     }
     return res;

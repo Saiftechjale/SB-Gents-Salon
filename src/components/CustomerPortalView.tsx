@@ -19,7 +19,6 @@ import {
   QrCode,
   Receipt,
   Search,
-  Sparkles,
   Sun,
   Tag,
   User,
@@ -43,7 +42,6 @@ import {
 } from '../lib/messagingTemplates';
 import { calculateOfferDiscount, isWeakPin, WEAK_PIN_MSG } from '../lib/pinSecurity';
 import { buildUpiDeepLinks } from '../lib/upiIntent';
-import { PWAInstallButton } from './PWAInstallButton';
 import {
   cleanDisplayName,
   formatServiceCombo,
@@ -141,6 +139,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
   const [sliderPaused, setSliderPaused] = useState<boolean>(false);
   const [selectedOfferId, setSelectedOfferId] = useState<string>('');
   const [promoInput, setPromoInput] = useState<string>('');
+  const [showPromoBox, setShowPromoBox] = useState<boolean>(false);
 
   // Booking State (Screen 1)
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>(() => {
@@ -780,17 +779,22 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       .catch(() => setBillingQrUrl(''));
   }, [billingUpiLinks?.generic]);
 
-  return (
-    <div className="min-h-screen bg-[#F8F7FC] dark:bg-slate-950 pb-20 md:pb-10">
-      {/* Compact Header matching PDF Eyebrow */}
-      <header className="sticky top-0 z-30 bg-[#F8F7FC]/95 dark:bg-slate-950/95 backdrop-blur-md px-4 sm:px-6 pt-[max(0.65rem,env(safe-area-inset-top))] pb-1.5">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
-          <div className="text-[11px] font-extrabold tracking-widest text-[#6C3BF5] uppercase truncate">
-            {data.salon.name} · CUSTOMER
-          </div>
+  const displayCustomerName = matchedCustomer?.name || customerName.trim();
 
-          {/* Desktop Inline Tabs */}
-          <nav className="hidden md:flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
+  return (
+    <div className="min-h-[100dvh] bg-[#F8F7FC] dark:bg-slate-950 flex flex-col">
+      {/* Desktop Top Navigation Bar (Hidden on mobile so mobile has zero wasted top space) */}
+      <header className="hidden md:block sticky top-0 z-30 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800">
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between gap-8">
+          <button
+            type="button"
+            onClick={() => setActiveTab('HOME')}
+            className="text-lg font-extrabold tracking-tight text-[#141028] dark:text-white whitespace-nowrap shrink-0"
+          >
+            {data.salon.name}
+          </button>
+
+          <nav className="flex items-center gap-6 text-sm font-semibold">
             {(
               [
                 { id: 'HOME', label: 'Home' },
@@ -804,10 +808,10 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-colors whitespace-nowrap ${
+                className={`py-1.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
                   activeTab === tab.id
-                    ? 'bg-[#6C3BF5] text-white'
-                    : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'border-[#6C3BF5] text-[#6C3BF5] font-bold'
+                    : 'border-transparent text-slate-600 dark:text-slate-300 hover:text-[#141028] dark:hover:text-white'
                 }`}
               >
                 {tab.label}
@@ -815,388 +819,376 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
             ))}
           </nav>
 
-          {customerPhone ? (
-            <span className="text-[11px] font-bold text-slate-400 tabular-nums whitespace-nowrap">
-              ••{customerPhone.slice(-4)}
-            </span>
-          ) : null}
+          <div className="flex items-center gap-2 shrink-0">
+            {isCustomerLoggedIn ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab('PROFILE')}
+                className="px-3.5 py-2 rounded-xl bg-[#F8F7FC] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-[#141028] dark:text-white flex items-center gap-2 whitespace-nowrap min-h-[40px]"
+              >
+                <span>{displayCustomerName || 'Account'}</span>
+                {customerPhone && (
+                  <span className="text-slate-400 tabular-nums">••{customerPhone.slice(-4)}</span>
+                )}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onOpenLogin}
+                className="px-4 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap min-h-[40px] hover:bg-[#5B2BE0] transition-colors"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Login / Account</span>
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-1 space-y-4">
-        {/* CLEAN SIMPLE HOME SCREEN */}
+      <main className="flex-1 w-full max-w-6xl mx-auto px-3.5 sm:px-6 pt-[max(0.65rem,env(safe-area-inset-top))] md:pt-5 pb-[calc(4.6rem+env(safe-area-inset-bottom))] md:pb-6">
+        {/* HOME TAB: Compact zero-scroll mobile + 2-column balanced desktop */}
         {activeTab === 'HOME' && (() => {
-          const displayCustomerName = matchedCustomer?.name || customerName.trim();
           const waitingCount = dayQueue.filter((b) => b.status === 'WAITING').length;
           const freeBarbersCount = activeBarbers.filter(
             (b) => b.availability_status === 'Available'
           ).length;
 
           return (
-            <div className="max-w-xl mx-auto space-y-4">
-              {/* 1. Salon Welcome Header */}
-              <div className="space-y-1">
-                <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
-                  Namaste{isCustomerLoggedIn && displayCustomerName ? `, ${displayCustomerName}` : ''}
-                </h1>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-semibold text-slate-500 dark:text-slate-400">
-                  <span className="inline-flex items-center gap-1">
-                    <MapPin className="w-3.5 h-3.5 text-[#6C3BF5]" />
-                    <span>{data.salon.address || data.salon.name}</span>
-                  </span>
-                  <span className="inline-flex items-center gap-1 tabular-nums">
-                    <Clock className="w-3.5 h-3.5 text-[#6C3BF5]" />
-                    <span>
+            <div className="space-y-3 md:space-y-4">
+              {/* Compact Greeting + Quick Auth / Active Booking Strip */}
+              <div className="flex items-center justify-between gap-2.5">
+                <div className="min-w-0">
+                  <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight truncate">
+                    Namaste{isCustomerLoggedIn && displayCustomerName ? `, ${displayCustomerName}` : ''}
+                  </h1>
+                  <div className="flex items-center gap-2 text-[11px] sm:text-xs font-medium text-slate-500 dark:text-slate-400 truncate">
+                    <span className="inline-flex items-center gap-1 truncate">
+                      <MapPin className="w-3 h-3 text-[#6C3BF5] shrink-0" />
+                      <span className="truncate">{data.salon.address || data.salon.name}</span>
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="tabular-nums whitespace-nowrap shrink-0">
                       {formatSlot12h(data.settings.opening_time)} – {formatSlot12h(data.settings.closing_time)}
                     </span>
-                  </span>
+                  </div>
                 </div>
-              </div>
 
-              {/* 2. Single Primary Action / Live Status Hero Card */}
-              {!isCustomerLoggedIn ? (
-                <div className="sb-gradient rounded-3xl p-5 text-white shadow-xl shadow-purple-500/20 space-y-3">
-                  <div className="space-y-1">
-                    <div className="text-[11px] font-extrabold tracking-wider uppercase text-white/80">
-                      {data.salon.name}
-                    </div>
-                    <div className="text-xl font-extrabold leading-snug">
-                      Bina line me lage apna slot book karein
-                    </div>
-                    <p className="text-xs text-white/85">
-                      Apne real mobile number se Login ya Naya Account banayein.
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2.5 pt-1">
-                    <button
-                      type="button"
-                      onClick={onOpenLogin}
-                      className="py-3 px-3 rounded-2xl bg-white text-[#141028] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 min-h-[44px] whitespace-nowrap"
-                    >
-                      <LogIn className="w-4 h-4 text-[#6C3BF5]" />
-                      <span>Login / Account</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('BOOKING')}
-                      className="py-3 px-3 rounded-2xl bg-white/15 border border-white/25 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 min-h-[44px] whitespace-nowrap"
-                    >
-                      <span>Slot Dekhein</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              ) : myTrackedBooking ? (
-                <div className="sb-gradient rounded-3xl p-5 text-white shadow-xl shadow-purple-500/20 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-extrabold tracking-wider uppercase text-white/80">
-                      AAPKI ACTIVE BOOKING
-                    </span>
-                    <span className="text-xs font-extrabold bg-white/20 px-2.5 py-1 rounded-full tabular-nums">
-                      Token #{myTrackedBooking.token_number}
-                    </span>
-                  </div>
-                  <div className="text-xl font-extrabold leading-snug">
-                    {myTrackedBooking.status === 'IN_PROGRESS'
-                      ? 'Aapka number aa gaya — Chair par pahunchein'
-                      : myTrackedBooking.status === 'COMPLETED'
-                      ? 'Aaj ki service poori ho gayi hai'
-                      : `Aapse pehle ${aheadBookings.length} log line me hain`}
-                  </div>
-                  <div className="text-xs font-semibold text-white/90">
-                    {myTrackedBooking.booking_date === todayStr
-                      ? 'Aaj'
-                      : formatShortDate(myTrackedBooking.booking_date)}{' '}
-                    · {formatSlot12h(myTrackedBooking.slot_time)} ·{' '}
-                    {cleanDisplayName(myTrackedBooking.barber_name).split(' ')[0]}
-                  </div>
+                {!isCustomerLoggedIn ? (
+                  <button
+                    type="button"
+                    onClick={onOpenLogin}
+                    className="md:hidden px-3 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold flex items-center gap-1.5 shrink-0 min-h-[40px] whitespace-nowrap shadow-sm"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>Login</span>
+                  </button>
+                ) : myTrackedBooking ? (
                   <button
                     type="button"
                     onClick={() => setActiveTab('QUEUE')}
-                    className="w-full py-3 rounded-2xl bg-white text-[#141028] font-extrabold text-sm flex items-center justify-center gap-2 min-h-[44px]"
+                    className="px-3 py-2 rounded-xl bg-[#EDE9FE] dark:bg-purple-950/60 text-[#5B21B6] dark:text-purple-200 text-xs font-extrabold flex items-center gap-1.5 shrink-0 min-h-[40px] whitespace-nowrap tabular-nums"
                   >
-                    <span>Live Queue Dekhein</span>
-                    <ArrowRight className="w-4 h-4" />
+                    <span>Token #{myTrackedBooking.token_number}</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
                   </button>
-                </div>
-              ) : (
-                <div className="sb-gradient rounded-3xl p-5 text-white shadow-xl shadow-purple-500/20 space-y-3">
-                  <div className="text-[11px] font-extrabold tracking-wider uppercase text-white/80">
-                    AAJ KA SALON STATUS
-                  </div>
-                  <div className="text-xl font-extrabold leading-snug">
-                    {waitingCount === 0
-                      ? 'Abhi salon khali hai — turant slot book karein'
-                      : `Abhi line me ${waitingCount} log · ${freeBarbersCount} stylists free`}
-                  </div>
-                  <p className="text-xs text-white/85">
-                    Apni pasand ki service aur stylist chunein, sahi time par aayein.
-                  </p>
+                ) : (
                   <button
                     type="button"
                     onClick={() => setActiveTab('BOOKING')}
-                    className="w-full py-3.5 rounded-2xl bg-white text-[#141028] font-extrabold text-sm flex items-center justify-center gap-2 min-h-[46px]"
+                    className="px-3 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold flex items-center gap-1.5 shrink-0 min-h-[40px] whitespace-nowrap"
                   >
-                    <span>Slot Book Karein</span>
-                    <ArrowRight className="w-4 h-4" />
+                    <span>Slot Book</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
                   </button>
-                </div>
-              )}
+                )}
+              </div>
 
-              {/* 2.5 Special Offers & Discounts Slider (Editable by Malik) */}
-              {activeOffers.length > 0 && (() => {
-                const safeIdx = offerSlideIdx % activeOffers.length;
-                const offer = activeOffers[safeIdx];
-                const gradient = OFFER_THEME_CLASSES[offer.accent_theme] || OFFER_THEME_CLASSES.PURPLE;
-                return (
-                  <div
-                    className="space-y-2"
-                    onMouseEnter={() => setSliderPaused(true)}
-                    onMouseLeave={() => setSliderPaused(false)}
-                    onTouchStart={() => setSliderPaused(true)}
-                  >
+              {/* Desktop 2-Column Layout / Mobile Single-Viewport Stack */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 md:gap-5 items-start">
+                {/* Left Column on Desktop: Offers Slider + Stylists + Direct Contact */}
+                <div className="lg:col-span-5 space-y-2.5 md:space-y-4">
+                  {/* Offers Slider (Compact) */}
+                  {activeOffers.length > 0 && (() => {
+                    const safeIdx = offerSlideIdx % activeOffers.length;
+                    const offer = activeOffers[safeIdx];
+                    const gradient = OFFER_THEME_CLASSES[offer.accent_theme] || OFFER_THEME_CLASSES.PURPLE;
+                    return (
+                      <div
+                        className="space-y-1.5"
+                        onMouseEnter={() => setSliderPaused(true)}
+                        onMouseLeave={() => setSliderPaused(false)}
+                        onTouchStart={() => setSliderPaused(true)}
+                      >
+                        <div className="flex items-center justify-between">
+                          <h2 className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase flex items-center gap-1.5">
+                            <Tag className="w-3.5 h-3.5 text-[#6C3BF5]" />
+                            <span>Special Offers</span>
+                          </h2>
+                          {activeOffers.length > 1 && (
+                            <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1 mr-1">
+                                {activeOffers.map((o, idx) => (
+                                  <button
+                                    key={o.id}
+                                    type="button"
+                                    onClick={() => setOfferSlideIdx(idx)}
+                                    aria-label={`Offer ${idx + 1}`}
+                                    className={`h-1.5 rounded-full transition-all ${
+                                      idx === safeIdx
+                                        ? 'w-4 bg-[#6C3BF5]'
+                                        : 'w-1.5 bg-slate-300 dark:bg-slate-700'
+                                    }`}
+                                  />
+                                ))}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setOfferSlideIdx(
+                                    (safeIdx - 1 + activeOffers.length) % activeOffers.length
+                                  )
+                                }
+                                aria-label="Previous offer"
+                                className="w-7 h-7 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300"
+                              >
+                                <ChevronLeft className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setOfferSlideIdx((safeIdx + 1) % activeOffers.length)
+                                }
+                                aria-label="Next offer"
+                                className="w-7 h-7 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300"
+                              >
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div
+                          className={`rounded-2xl bg-gradient-to-br ${gradient} p-3.5 sm:p-4 text-white shadow-md space-y-2 transition-all`}
+                        >
+                          <div className="flex items-center justify-between gap-2 text-[11px] font-extrabold uppercase tracking-wider text-white/90">
+                            <span>{offer.badge_text}</span>
+                            {offer.promo_code && (
+                              <span className="tabular-nums bg-black/20 px-2 py-0.5 rounded-md">
+                                CODE: {offer.promo_code}
+                              </span>
+                            )}
+                          </div>
+                          <div>
+                            <div className="text-base sm:text-lg font-extrabold leading-snug truncate">
+                              {offer.title}
+                            </div>
+                            {offer.subtitle && (
+                              <p className="text-[11px] sm:text-xs text-white/90 truncate">
+                                {offer.subtitle}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-0.5">
+                            <span className="text-[11px] font-bold text-white/85 tabular-nums">
+                              {Number(offer.min_bill || 0) > 0
+                                ? `Min Bill ₹${offer.min_bill}`
+                                : 'Sabhi bookings par'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedOfferId(offer.id);
+                                if (offer.promo_code) setPromoInput(offer.promo_code);
+                                setActiveTab('BOOKING');
+                              }}
+                              className="px-3.5 py-2 rounded-xl bg-white text-[#141028] text-xs font-extrabold flex items-center gap-1 min-h-[38px] whitespace-nowrap shadow-sm"
+                            >
+                              <span>Offer Lagayein</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Stylists: Compact 3-Column Strip on Mobile, Clean Cards on Desktop */}
+                  <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <h2 className="text-xs font-extrabold tracking-wider text-slate-500 uppercase flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-[#6C3BF5]" />
-                        <span>SPECIAL OFFERS &amp; DISCOUNTS</span>
+                      <h2 className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                        Hamare Stylists
                       </h2>
-                      {activeOffers.length > 1 && (
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setOfferSlideIdx(
-                                (safeIdx - 1 + activeOffers.length) % activeOffers.length
-                              )
-                            }
-                            aria-label="Previous offer"
-                            className="w-9 h-9 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300"
-                          >
-                            <ChevronLeft className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setOfferSlideIdx((safeIdx + 1) % activeOffers.length)
-                            }
-                            aria-label="Next offer"
-                            className="w-9 h-9 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300"
-                          >
-                            <ChevronRight className="w-4 h-4" />
-                          </button>
-                        </div>
-                      )}
+                      <span className="text-[11px] font-semibold text-slate-500 tabular-nums">
+                        {freeBarbersCount} available · {waitingCount} waiting
+                      </span>
                     </div>
+                    <div className="grid grid-cols-3 lg:grid-cols-1 gap-2">
+                      {activeBarbers.slice(0, 3).map((barber, idx) => {
+                        const bName = cleanDisplayName(barber.name);
+                        const shortName = bName.split(' ')[0];
+                        const isAvail = barber.availability_status === 'Available';
+                        return (
+                          <button
+                            key={barber.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedBarberId(barber.id);
+                              setActiveTab('BOOKING');
+                            }}
+                            className="sb-card p-2.5 lg:px-3.5 lg:py-2.5 text-center lg:text-left flex flex-col lg:flex-row items-center lg:justify-between gap-1.5 lg:gap-3 hover:border-[#6C3BF5]/50 transition-colors min-h-[44px]"
+                          >
+                            <div className="flex flex-col lg:flex-row items-center gap-1.5 lg:gap-2.5 min-w-0">
+                              <div
+                                className={`w-8 h-8 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${getAvatarColorClass(
+                                  idx
+                                )}`}
+                              >
+                                {getSingleInitial(bName)}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="text-xs lg:text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                                  <span className="lg:hidden">{shortName}</span>
+                                  <span className="hidden lg:inline">{bName}</span>
+                                </div>
+                                <div className="hidden lg:block text-[11px] text-slate-500 truncate">
+                                  {barber.specialty || 'Salon Stylist'}
+                                </div>
+                              </div>
+                            </div>
+                            <span
+                              className={`text-[10px] lg:text-xs font-bold whitespace-nowrap ${
+                                isAvail ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
+                              }`}
+                            >
+                              {isAvail ? 'Available' : barber.availability_status}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
 
-                    <div
-                      className={`rounded-3xl bg-gradient-to-br ${gradient} p-4 sm:p-5 text-white shadow-lg space-y-3 transition-all`}
+                  {/* Direct Salon Contact (Compact 2-button bar) */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <a
+                      href={buildWhatsAppUrl(
+                        data.salon.phone,
+                        `Namaste ${data.salon.name}, mujhe booking ke baare me poochhna hai.`
+                      )}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2.5 px-3 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[42px] whitespace-nowrap"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="inline-flex items-center gap-1 text-[11px] font-extrabold uppercase tracking-wider bg-black/20 px-2.5 py-1 rounded-lg">
-                          <Tag className="w-3 h-3" />
-                          <span>{offer.badge_text}</span>
-                        </span>
-                        {offer.promo_code && (
-                          <span className="text-[11px] font-extrabold tracking-wider uppercase bg-white/20 px-2.5 py-1 rounded-lg tabular-nums">
-                            CODE: {offer.promo_code}
-                          </span>
-                        )}
-                      </div>
-                      <div>
-                        <div className="text-lg sm:text-xl font-extrabold leading-snug">
-                          {offer.title}
-                        </div>
-                        {offer.subtitle && (
-                          <p className="text-xs text-white/90 mt-0.5">{offer.subtitle}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center justify-between gap-2 pt-0.5">
-                        <span className="text-[11px] font-bold text-white/85 tabular-nums">
-                          {Number(offer.min_bill || 0) > 0
-                            ? `Min Bill ₹${offer.min_bill}`
-                            : 'Sabhi bookings par valid'}
-                        </span>
+                      <MessageCircle className="w-4 h-4 shrink-0" />
+                      <span>WhatsApp</span>
+                    </a>
+                    <a
+                      href={buildSmsUrl(
+                        data.salon.phone,
+                        `Namaste ${data.salon.name}, mujhe slot booking chahiye.`
+                      )}
+                      className="py-2.5 px-3 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[42px] whitespace-nowrap"
+                    >
+                      <MessageSquare className="w-4 h-4 shrink-0" />
+                      <span>SMS Karein</span>
+                    </a>
+                  </div>
+                </div>
+
+                {/* Right Column on Desktop: Services & Rate List */}
+                <div className="lg:col-span-7 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
+                      Services &amp; Rate List
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('BOOKING')}
+                      className="text-xs font-bold text-[#6C3BF5] whitespace-nowrap"
+                    >
+                      Sab Dekhein →
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-3 gap-2 md:gap-3">
+                    {activeServices.slice(0, 6).map((srv, idx) => {
+                      const visual = getServiceVisualTag(srv);
+                      const title = lang === 'hi' && srv.name_hi ? srv.name_hi : srv.name;
+                      return (
                         <button
+                          key={srv.id}
                           type="button"
                           onClick={() => {
-                            setSelectedOfferId(offer.id);
-                            if (offer.promo_code) setPromoInput(offer.promo_code);
+                            setSelectedServiceIds([srv.id]);
                             setActiveTab('BOOKING');
                           }}
-                          className="px-4 py-2.5 rounded-xl bg-white text-[#141028] text-xs font-extrabold flex items-center gap-1.5 min-h-[44px] whitespace-nowrap shadow-sm"
+                          className={`sb-card p-2.5 md:p-3.5 text-left flex items-center gap-2.5 hover:border-[#6C3BF5]/50 transition-colors min-h-[54px] md:min-h-[68px] ${
+                            idx >= 4 ? 'hidden md:flex' : 'flex'
+                          }`}
                         >
-                          <span>Offer Lagayein</span>
-                          <ArrowRight className="w-3.5 h-3.5" />
+                          <div
+                            className={`w-8 h-8 md:w-10 md:h-10 rounded-xl ${visual.bg} flex items-center justify-center text-sm md:text-base shrink-0`}
+                          >
+                            {visual.symbol}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs md:text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                              {title}
+                            </div>
+                            <div className="text-[11px] md:text-xs font-bold text-[#6C3BF5] tabular-nums mt-0.5">
+                              ₹{srv.price} · {srv.duration_minutes}m
+                            </div>
+                          </div>
                         </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Desktop Quick Queue / Book CTA Bar */}
+                  <div className="hidden lg:flex sb-card p-4 items-center justify-between gap-4">
+                    <div>
+                      <div className="text-xs font-bold text-slate-500 uppercase">
+                        Live Queue &amp; Booking
+                      </div>
+                      <div className="text-sm font-extrabold text-[#141028] dark:text-white mt-0.5">
+                        {waitingCount === 0
+                          ? 'Abhi koi line nahi hai — turant slot book karein'
+                          : `Abhi ${waitingCount} log queue me · ${freeBarbersCount} stylists free`}
                       </div>
                     </div>
-
-                    {activeOffers.length > 1 && (
-                      <div className="flex items-center justify-center gap-1.5">
-                        {activeOffers.map((o, idx) => (
-                          <button
-                            key={o.id}
-                            type="button"
-                            onClick={() => setOfferSlideIdx(idx)}
-                            aria-label={`Offer ${idx + 1}`}
-                            className={`h-2 rounded-full transition-all ${
-                              idx === safeIdx
-                                ? 'w-6 bg-[#6C3BF5]'
-                                : 'w-2 bg-slate-300 dark:bg-slate-700'
-                            }`}
-                          />
-                        ))}
-                      </div>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('QUEUE')}
+                        className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-extrabold text-[#141028] dark:text-white min-h-[42px] whitespace-nowrap"
+                      >
+                        Live Queue
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('BOOKING')}
+                        className="px-4 py-2.5 rounded-xl sb-gradient text-white text-xs font-extrabold flex items-center gap-1.5 min-h-[42px] whitespace-nowrap"
+                      >
+                        <span>Slot Book Karein</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
-                );
-              })()}
-
-              {/* 3. Services & Rate Card (Tap to book immediately) */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-xs font-extrabold tracking-wider text-slate-500 uppercase">
-                    SERVICES &amp; RATE LIST
-                  </h2>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('BOOKING')}
-                    className="text-xs font-bold text-[#6C3BF5]"
-                  >
-                    Sab Dekhein
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 gap-2.5">
-                  {activeServices.slice(0, 6).map((srv) => {
-                    const visual = getServiceVisualTag(srv);
-                    const title = lang === 'hi' && srv.name_hi ? srv.name_hi : srv.name;
-                    return (
-                      <button
-                        key={srv.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedServiceIds([srv.id]);
-                          setActiveTab('BOOKING');
-                        }}
-                        className="sb-card p-3 text-left flex items-center gap-2.5 hover:border-[#6C3BF5]/50 transition-colors min-h-[64px]"
-                      >
-                        <div
-                          className={`w-9 h-9 rounded-xl ${visual.bg} flex items-center justify-center text-base shrink-0`}
-                        >
-                          {visual.symbol}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-extrabold text-[#141028] dark:text-white truncate">
-                            {title}
-                          </div>
-                          <div className="text-[11px] font-bold text-[#6C3BF5] tabular-nums mt-0.5">
-                            ₹{srv.price} · {srv.duration_minutes}m
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
                 </div>
               </div>
-
-              {/* 4. Hamare Stylists */}
-              <div className="space-y-2">
-                <h2 className="text-xs font-extrabold tracking-wider text-slate-500 uppercase">
-                  HAMARE STYLISTS
-                </h2>
-                <div className="sb-card divide-y divide-slate-100 dark:divide-slate-800">
-                  {activeBarbers.map((barber, idx) => {
-                    const bName = cleanDisplayName(barber.name);
-                    const isAvail = barber.availability_status === 'Available';
-                    return (
-                      <button
-                        key={barber.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedBarberId(barber.id);
-                          setActiveTab('BOOKING');
-                        }}
-                        className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors min-h-[54px]"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div
-                            className={`w-9 h-9 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${getAvatarColorClass(
-                              idx
-                            )}`}
-                          >
-                            {getSingleInitial(bName)}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
-                              {bName}
-                            </div>
-                            <div className="text-[11px] text-slate-500 truncate">
-                              {barber.specialty || 'Salon Stylist'}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-xs font-bold shrink-0">
-                          <span
-                            className={`w-2 h-2 rounded-full ${
-                              isAvail ? 'bg-emerald-500' : 'bg-amber-500'
-                            }`}
-                          />
-                          <span className={isAvail ? 'text-emerald-600' : 'text-amber-600'}>
-                            {barber.availability_status}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* 5. Direct Salon Contact */}
-              <div className="sb-card p-3.5 space-y-2">
-                <div className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
-                  SALON SE SEEDHA SAMPARK
-                </div>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <a
-                    href={buildWhatsAppUrl(
-                      data.salon.phone,
-                      `Namaste ${data.salon.name}, mujhe booking ke baare me poochhna hai.`
-                    )}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="py-3 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[44px]"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                    <span>WhatsApp</span>
-                  </a>
-                  <a
-                    href={buildSmsUrl(
-                      data.salon.phone,
-                      `Namaste ${data.salon.name}, mujhe slot booking chahiye.`
-                    )}
-                    className="py-3 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[44px]"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    <span>SMS Karein</span>
-                  </a>
-                </div>
-              </div>
-
-              {/* 6. Direct Web App Install / Save to Home Screen */}
-              <PWAInstallButton salonName={data.salon.name} />
             </div>
           );
         })()}
 
-        {/* SCREEN 1: BOOKING (Zero-scroll single-screen layout matching PDF Page 1) */}
+        {/* SCREEN 1: BOOKING (Zero-scroll single-screen layout on Mobile & Desktop) */}
         {activeTab === 'BOOKING' && (
-          <div className="space-y-3">
-            <div className="flex items-end justify-between gap-2">
+          <div className="space-y-2.5 md:space-y-4">
+            <div className="flex items-center justify-between gap-2">
               <div>
-                <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
+                <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
                   Slot book karo
                 </h1>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="hidden sm:block text-xs text-slate-500 dark:text-slate-400">
                   Service, stylist, time — line ka jhanjhat nahi
                 </p>
               </div>
@@ -1204,17 +1196,17 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowAllServices((v) => !v)}
-                  className="text-[11px] font-bold text-[#6C3BF5] bg-purple-50 dark:bg-purple-950/50 px-2.5 py-1 rounded-full shrink-0"
+                  className="text-xs font-bold text-[#6C3BF5] px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shrink-0 whitespace-nowrap"
                 >
                   {showAllServices ? '2x2 View' : `+${activeServices.length - 4} More`}
                 </button>
               )}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-start">
-              {/* Left Column: 2x2 Services + 1-line Stylist */}
-              <div className="lg:col-span-6 space-y-3">
-                <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 md:gap-5 items-start">
+              {/* Left Column: Services + Stylist */}
+              <div className="lg:col-span-6 space-y-2.5 md:space-y-3">
+                <div className="grid grid-cols-2 gap-2 md:gap-2.5">
                   {displayServices.map((srv) => {
                     const selected = selectedServiceIds.includes(srv.id);
                     const visual = getServiceVisualTag(srv);
@@ -1224,27 +1216,27 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                         key={srv.id}
                         type="button"
                         onClick={() => toggleService(srv.id)}
-                        className={`relative p-2.5 rounded-2xl text-left flex items-center gap-2.5 transition-all min-h-[60px] bg-white dark:bg-slate-900 shadow-sm ${
+                        className={`relative p-2 md:p-3 rounded-2xl text-left flex items-center gap-2 transition-all min-h-[52px] md:min-h-[62px] bg-white dark:bg-slate-900 shadow-sm ${
                           selected
                             ? 'border-2 border-[#6C3BF5] shadow-md shadow-purple-500/10'
                             : 'border border-slate-200/80 dark:border-slate-800 hover:border-[#6C3BF5]/40'
                         }`}
                       >
                         <div
-                          className={`w-9 h-9 rounded-xl ${visual.bg} flex items-center justify-center text-base shrink-0`}
+                          className={`w-8 h-8 md:w-9 md:h-9 rounded-xl ${visual.bg} flex items-center justify-center text-sm md:text-base shrink-0`}
                         >
                           {visual.symbol}
                         </div>
                         <div className="min-w-0 flex-1 pr-4">
-                          <div className="text-[13px] font-extrabold text-[#141028] dark:text-white leading-tight line-clamp-2">
+                          <div className="text-xs md:text-[13px] font-extrabold text-[#141028] dark:text-white leading-tight truncate">
                             {displayTitle}
                           </div>
-                          <div className="text-xs font-bold text-[#6C3BF5] tabular-nums mt-0.5">
+                          <div className="text-[11px] md:text-xs font-bold text-[#6C3BF5] tabular-nums mt-0.5">
                             ₹{srv.price}
                           </div>
                         </div>
                         {selected && (
-                          <span className="absolute top-2 right-2 w-4.5 h-4.5 rounded-full bg-[#6C3BF5] text-white flex items-center justify-center">
+                          <span className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-[#6C3BF5] text-white flex items-center justify-center">
                             <Check className="w-2.5 h-2.5 stroke-[3]" />
                           </span>
                         )}
@@ -1254,17 +1246,17 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 </div>
 
                 {/* STYLIST (Single horizontal strip) */}
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <div className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
-                    STYLIST
+                    Stylist
                   </div>
-                  <div className="flex items-center gap-2 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     <button
                       type="button"
                       onClick={() => setSelectedBarberId('ANY')}
-                      className={`px-3.5 py-2 rounded-2xl text-xs font-bold transition-all min-h-[38px] shrink-0 whitespace-nowrap ${
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all min-h-[38px] shrink-0 whitespace-nowrap ${
                         selectedBarberId === 'ANY'
-                          ? 'bg-[#6C3BF5] text-white shadow-md shadow-purple-500/20'
+                          ? 'bg-[#6C3BF5] text-white shadow-sm'
                           : 'bg-white dark:bg-slate-900 text-[#141028] dark:text-slate-200 border border-slate-200/80 dark:border-slate-800'
                       }`}
                     >
@@ -1278,9 +1270,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                           key={barber.id}
                           type="button"
                           onClick={() => setSelectedBarberId(barber.id)}
-                          className={`pl-1.5 pr-3 py-1.5 rounded-2xl text-xs font-bold flex items-center gap-1.5 transition-all min-h-[38px] shrink-0 whitespace-nowrap ${
+                          className={`pl-1.5 pr-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all min-h-[38px] shrink-0 whitespace-nowrap ${
                             active
-                              ? 'bg-[#6C3BF5] text-white shadow-md shadow-purple-500/20'
+                              ? 'bg-[#6C3BF5] text-white shadow-sm'
                               : 'bg-white dark:bg-slate-900 text-[#141028] dark:text-slate-200 border border-slate-200/80 dark:border-slate-800'
                           }`}
                         >
@@ -1296,52 +1288,17 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                       );
                     })}
                   </div>
-                  {selectedBarberObj && cleanPhone10(selectedBarberObj.phone).length === 10 && (() => {
-                    const barberShort = cleanDisplayName(selectedBarberObj.name).split(' ')[0];
-                    const quickDirectText = `Namaste ${barberShort} ji (${data.salon.name}), mujhe ${
-                      selectedServices.length > 0
-                        ? formatServiceCombo(selectedServices.map((s) => s.name))
-                        : 'salon service'
-                    } ke liye ${selectedDate === todayStr ? 'aaj' : formatShortDate(selectedDate)}${
-                      selectedSlot ? ` ${formatSlot12h(selectedSlot)}` : ''
-                    } ka slot chahiye.`;
-                    return (
-                      <div className="flex items-center justify-between gap-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 px-3 py-1.5 text-[11px]">
-                        <span className="font-bold text-slate-600 dark:text-slate-300 truncate">
-                          {barberShort}: {selectedBarberObj.availability_status}
-                        </span>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <a
-                            href={buildWhatsAppUrl(selectedBarberObj.phone, quickDirectText)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-2 py-1 rounded-lg bg-emerald-600 text-white font-bold flex items-center gap-1"
-                          >
-                            <MessageCircle className="w-3 h-3" />
-                            <span>WhatsApp</span>
-                          </a>
-                          <a
-                            href={buildSmsUrl(selectedBarberObj.phone, quickDirectText)}
-                            className="px-2 py-1 rounded-lg bg-sky-600 text-white font-bold flex items-center gap-1"
-                          >
-                            <MessageSquare className="w-3 h-3" />
-                            <span>SMS</span>
-                          </a>
-                        </div>
-                      </div>
-                    );
-                  })()}
                 </div>
               </div>
 
-              {/* Right Column: DIN + 3x3 TIME + Summary + CTA */}
-              <div className="lg:col-span-6 space-y-3">
+              {/* Right Column: DIN + 3x3 TIME + Offer + Summary + CTA */}
+              <div className="lg:col-span-6 space-y-2.5 md:space-y-3">
                 {/* DIN (5-day strip) */}
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <div className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
-                    DIN
+                    Din
                   </div>
-                  <div className="grid grid-cols-5 gap-2">
+                  <div className="grid grid-cols-5 gap-1.5 md:gap-2">
                     {dateStrip.map((d) => {
                       const active = selectedDate === d.dateStr;
                       return (
@@ -1349,9 +1306,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                           key={d.dateStr}
                           type="button"
                           onClick={() => setSelectedDate(d.dateStr)}
-                          className={`py-2 px-1 rounded-2xl text-center transition-all min-h-[52px] flex flex-col items-center justify-center ${
+                          className={`py-1.5 px-1 rounded-xl text-center transition-all min-h-[44px] md:min-h-[50px] flex flex-col items-center justify-center ${
                             active
-                              ? 'bg-[#141028] text-white shadow-md'
+                              ? 'bg-[#141028] text-white shadow-sm'
                               : 'bg-white dark:bg-slate-900 text-[#141028] dark:text-slate-200 border border-slate-200/80 dark:border-slate-800'
                           }`}
                         >
@@ -1362,7 +1319,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                           >
                             {d.topLabel}
                           </span>
-                          <span className="text-base font-extrabold leading-tight tabular-nums">
+                          <span className="text-sm md:text-base font-extrabold leading-tight tabular-nums">
                             {d.dayNum}
                           </span>
                         </button>
@@ -1371,11 +1328,11 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   </div>
                 </div>
 
-                {/* TIME (3x3 grid matching PDF Page 1) */}
-                <div className="space-y-1.5">
+                {/* TIME (3x3 grid) */}
+                <div className="space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
-                      TIME
+                      Time
                     </span>
                     {enabledSlots.length > 9 && (
                       <button
@@ -1387,7 +1344,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                       </button>
                     )}
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-3 gap-1.5 md:gap-2">
                     {displaySlots.map((slot) => {
                       const past = isSlotInPastForDate(selectedDate, slot.slot_time);
                       const booked = isSlotBookedForSelection(
@@ -1404,11 +1361,11 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                           type="button"
                           disabled={disabled}
                           onClick={() => setSelectedSlot(slot.slot_time)}
-                          className={`py-2.5 px-1.5 rounded-xl text-xs font-extrabold transition-all min-h-[40px] tabular-nums ${
+                          className={`py-2 px-1.5 rounded-xl text-xs font-extrabold transition-all min-h-[38px] tabular-nums ${
                             disabled
                               ? 'bg-slate-200/70 dark:bg-slate-900/50 text-slate-400 line-through cursor-not-allowed'
                               : active
-                              ? 'bg-[#6C3BF5] text-white shadow-md shadow-purple-500/25'
+                              ? 'bg-[#6C3BF5] text-white shadow-sm'
                               : 'bg-white dark:bg-slate-900 text-[#141028] dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 hover:border-[#6C3BF5]/50'
                           }`}
                         >
@@ -1419,29 +1376,13 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   </div>
                 </div>
 
-                {/* Offers & Promo Discount Selector */}
+                {/* Compact Offers & Promo Selector */}
                 {activeOffers.length > 0 && (
-                  <div className="sb-card p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] font-extrabold tracking-wider text-slate-500 uppercase flex items-center gap-1">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      <span className="text-[10px] font-extrabold text-slate-500 uppercase flex items-center gap-1 shrink-0">
                         <Tag className="w-3 h-3 text-[#6C3BF5]" />
-                        <span>DISCOUNT / PROMO CODE</span>
                       </span>
-                      {appliedOffer && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedOfferId('');
-                            setPromoInput('');
-                          }}
-                          className="text-[11px] font-bold text-rose-500"
-                        >
-                          Hatayein
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                       {activeOffers.map((off) => {
                         const active = appliedOffer?.id === off.id;
                         return (
@@ -1457,58 +1398,62 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                                 setPromoInput(off.promo_code || '');
                               }
                             }}
-                            className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold shrink-0 whitespace-nowrap border transition-colors min-h-[36px] ${
+                            className={`px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold shrink-0 whitespace-nowrap border transition-colors min-h-[34px] ${
                               active
                                 ? 'bg-[#6C3BF5] text-white border-[#6C3BF5]'
-                                : 'bg-[#F8F7FC] dark:bg-slate-950 text-[#141028] dark:text-slate-200 border-slate-200 dark:border-slate-800'
+                                : 'bg-white dark:bg-slate-900 text-[#141028] dark:text-slate-200 border-slate-200 dark:border-slate-800'
                             }`}
                           >
                             {off.badge_text}
-                            {Number(off.min_bill || 0) > 0 ? ` (₹${off.min_bill}+)` : ''}
                           </button>
                         );
                       })}
+                      <button
+                        type="button"
+                        onClick={() => setShowPromoBox((v) => !v)}
+                        className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold shrink-0 whitespace-nowrap border border-dashed border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 min-h-[34px]"
+                      >
+                        {showPromoBox ? 'Hide Code' : '+ Promo Code'}
+                      </button>
                     </div>
 
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={promoInput}
-                        onChange={(e) => {
-                          setSelectedOfferId('');
-                          setPromoInput(e.target.value.toUpperCase());
-                        }}
-                        placeholder="Promo Code daalein (e.g. WELCOME20)"
-                        className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold uppercase focus:outline-none focus:border-[#6C3BF5]"
-                      />
-                      {promoInput.trim() && !appliedOffer && (
-                        <span className="self-center text-[11px] font-bold text-rose-500 whitespace-nowrap pr-1">
-                          Invalid code
-                        </span>
-                      )}
-                    </div>
+                    {(showPromoBox || Boolean(promoInput)) && (
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={promoInput}
+                          onChange={(e) => {
+                            setSelectedOfferId('');
+                            setPromoInput(e.target.value.toUpperCase());
+                          }}
+                          placeholder="Promo Code (e.g. COMBO40)"
+                          className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-bold uppercase focus:outline-none focus:border-[#6C3BF5] min-h-[36px]"
+                        />
+                        {appliedOffer && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedOfferId('');
+                              setPromoInput('');
+                            }}
+                            className="px-3 rounded-xl text-xs font-bold text-rose-500 border border-rose-200 dark:border-rose-800"
+                          >
+                            Hatayein
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     {minBillMissing > 0 && (
                       <div className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
-                        Is offer ke liye ₹{minBillMissing} ki aur service jodein (Min ₹
-                        {appliedOffer?.min_bill})
+                        Is offer ke liye ₹{minBillMissing} ki aur service jodein (Min ₹{appliedOffer?.min_bill})
                       </div>
                     )}
                   </div>
                 )}
 
-                {/* Summary Bar + Gradient CTA */}
-                <div className="space-y-2.5 pt-0.5">
-                  {bookingDiscount > 0 && (
-                    <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 px-3 py-1.5 flex items-center justify-between text-xs font-bold text-emerald-700 dark:text-emerald-300 tabular-nums">
-                      <span className="truncate pr-2">
-                        Offer Savings ({appliedOffer?.badge_text || 'Discount'})
-                      </span>
-                      <span>
-                        ₹{totalBill} − ₹{bookingDiscount} = ₹{finalBookingTotal}
-                      </span>
-                    </div>
-                  )}
+                {/* Summary Bar + CTA */}
+                <div className="space-y-2 pt-0.5">
                   <div className="flex items-center justify-between text-xs sm:text-sm font-bold text-slate-600 dark:text-slate-300 px-0.5">
                     <span className="truncate pr-3">
                       {selectedServices.length > 0
@@ -1519,6 +1464,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                         ? cleanDisplayName(selectedBarberObj.name).split(' ')[0]
                         : 'Koi bhi'}{' '}
                       · {selectedSlot ? formatSlot12h(selectedSlot) : '--'}
+                      {bookingDiscount > 0 ? ` (−₹${bookingDiscount})` : ''}
                     </span>
                     <span className="text-lg font-extrabold text-[#141028] dark:text-white tabular-nums shrink-0">
                       ₹{finalBookingTotal}
@@ -1529,10 +1475,10 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                     type="button"
                     disabled={submitting}
                     onClick={() => submitBooking()}
-                    className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 active:scale-[0.99] transition-transform disabled:opacity-60 min-h-[48px]"
+                    className="w-full py-3 rounded-2xl sb-gradient text-white font-extrabold text-sm sm:text-base flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 active:scale-[0.99] transition-transform disabled:opacity-60 min-h-[46px]"
                   >
                     <span>{submitting ? 'Booking ho rahi hai...' : 'Slot book karo'}</span>
-                    <ArrowRight className="w-5 h-5" />
+                    <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5" />
                   </button>
                 </div>
               </div>
@@ -1540,15 +1486,15 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
           </div>
         )}
 
-        {/* SCREEN 2: QUEUE (Live queue — single screen matching PDF Page 2) */}
+        {/* SCREEN 2: QUEUE (Zero-scroll mobile + 2-column desktop) */}
         {activeTab === 'QUEUE' && (
-          <div className="space-y-3 max-w-2xl mx-auto">
+          <div className="space-y-2.5 md:space-y-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
+                <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
                   Live queue
                 </h1>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="hidden sm:block text-xs text-slate-500 dark:text-slate-400">
                   Ghar se dekho, sahi time pe aao
                 </p>
               </div>
@@ -1580,690 +1526,655 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
               </div>
             )}
 
-            {/* Hero Gradient Card (Enlarged matching PDF Page 2) */}
-            <div className="sb-gradient rounded-3xl p-5 sm:p-6 min-h-[138px] text-white shadow-xl shadow-purple-500/20 flex items-center justify-between gap-4">
-              <div className="space-y-1 min-w-0">
-                <div className="text-[11px] font-extrabold tracking-wider uppercase text-white/85">
-                  {myTrackedBooking
-                    ? myTrackedBooking.status === 'IN_PROGRESS'
-                      ? 'ABHI CHAL RAHA HAI'
-                      : myTrackedBooking.status === 'COMPLETED'
-                      ? 'KAAM POORA HUA'
-                      : 'AAPSE PEHLE'
-                    : 'LIVE SALON LINE'}
-                </div>
-                <div className="flex items-baseline gap-2.5">
-                  <span className="text-5xl font-extrabold tabular-nums leading-none">
-                    {myTrackedBooking
-                      ? myTrackedBooking.status === 'IN_PROGRESS'
-                        ? '0'
-                        : aheadBookings.length
-                      : aheadBookings.length}
-                  </span>
-                  <span className="text-lg font-bold text-white/90">log</span>
-                </div>
-                <div className="text-xs sm:text-sm font-semibold text-white/90 truncate pt-1">
-                  {myTrackedBooking
-                    ? `Token #${myTrackedBooking.token_number} · ${formatSlot12h(myTrackedBooking.slot_time)} · ${
-                        cleanDisplayName(myTrackedBooking.barber_name).split(' ')[0]
-                      }`
-                    : 'Apna slot book karein'}
-                </div>
-                {myTrackedBooking && (
-                  <div className="text-[11px] font-medium text-white/80 truncate">
-                    {myTrackedBooking.booking_date === todayStr
-                      ? 'Aaj'
-                      : formatShortDate(myTrackedBooking.booking_date)}{' '}
-                    ·{' '}
-                    {myTrackedBooking.services?.map((s) => s.service_name).join(' + ') ||
-                      'Salon Service'}
-                    {Number(myTrackedBooking.discount_amount || 0) > 0
-                      ? ` · ₹${myTrackedBooking.discount_amount} Offer Bachat`
-                      : ''}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 md:gap-5 items-start">
+              {/* Left Column on Desktop: Wait Hero + Active Chairs + Alert */}
+              <div className="lg:col-span-5 space-y-2.5 md:space-y-3">
+                <div className="sb-gradient rounded-2xl md:rounded-3xl p-4 sm:p-5 text-white shadow-lg shadow-purple-500/20 flex items-center justify-between gap-3">
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="text-[10px] font-extrabold tracking-wider uppercase text-white/85">
+                      {myTrackedBooking
+                        ? myTrackedBooking.status === 'IN_PROGRESS'
+                          ? 'ABHI CHAL RAHA HAI'
+                          : myTrackedBooking.status === 'COMPLETED'
+                          ? 'KAAM POORA HUA'
+                          : 'AAPSE PEHLE'
+                        : 'LIVE SALON LINE'}
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-4xl font-extrabold tabular-nums leading-none">
+                        {myTrackedBooking
+                          ? myTrackedBooking.status === 'IN_PROGRESS'
+                            ? '0'
+                            : aheadBookings.length
+                          : aheadBookings.length}
+                      </span>
+                      <span className="text-base font-bold text-white/90">log</span>
+                    </div>
+                    <div className="text-xs font-semibold text-white/90 truncate pt-0.5">
+                      {myTrackedBooking
+                        ? `Token #${myTrackedBooking.token_number} · ${formatSlot12h(myTrackedBooking.slot_time)} · ${
+                            cleanDisplayName(myTrackedBooking.barber_name).split(' ')[0]
+                          }`
+                        : 'Apna slot book karein'}
+                    </div>
                   </div>
-                )}
+
+                  <div className="relative w-20 h-20 shrink-0 flex items-center justify-center">
+                    <svg className="w-20 h-20 -rotate-90" viewBox="0 0 96 96">
+                      <circle
+                        cx="48"
+                        cy="48"
+                        r="38"
+                        fill="none"
+                        stroke="rgba(255,255,255,0.22)"
+                        strokeWidth="8"
+                      />
+                      <circle
+                        cx="48"
+                        cy="48"
+                        r="38"
+                        fill="none"
+                        stroke="#ffffff"
+                        strokeWidth="8"
+                        strokeLinecap="round"
+                        strokeDasharray={`${
+                          estWaitMins === 0
+                            ? 239
+                            : Math.max(48, Math.min(210, 239 - Math.min(estWaitMins, 180) * 1.1))
+                        } 239`}
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                      {estWaitMins === 0 ? (
+                        <>
+                          <span className="text-sm font-extrabold leading-none">
+                            {myTrackedBooking?.status === 'COMPLETED'
+                              ? 'Done'
+                              : myTrackedBooking?.status === 'IN_PROGRESS'
+                              ? 'Chair'
+                              : 'Ready'}
+                          </span>
+                          <span className="text-[10px] font-bold text-white/85 mt-0.5">0m</span>
+                        </>
+                      ) : estWaitMins >= 60 ? (
+                        <>
+                          <span className="text-sm font-extrabold leading-none tabular-nums">
+                            ~{Math.floor(estWaitMins / 60)}h {estWaitMins % 60}m
+                          </span>
+                          <span className="text-[10px] font-bold text-white/85 mt-0.5">baaki</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-base font-extrabold leading-none tabular-nums">
+                            ~{estWaitMins}
+                          </span>
+                          <span className="text-[10px] font-bold text-white/85 mt-0.5">min</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* ABHI CHAL RAHA (Chair cards) */}
+                <div className="grid grid-cols-2 gap-2">
+                  {activeChairs.slice(0, 2).map((ch, idx) => {
+                    const barberShort = cleanDisplayName(ch.barber.name).split(' ')[0];
+                    return (
+                      <div key={ch.barber.id} className="sb-card p-2.5 space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${getAvatarColorClass(
+                              idx
+                            )}`}
+                          >
+                            {getSingleInitial(barberShort)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-extrabold text-[#141028] dark:text-white truncate">
+                              {barberShort}
+                            </div>
+                            <div className="text-[10px] text-slate-400">Chair {ch.chairNo}</div>
+                          </div>
+                        </div>
+                        <div className="text-[11px] font-bold text-[#141028] dark:text-slate-200 truncate">
+                          {ch.inProgress
+                            ? `#${ch.inProgress.token_number} · ${
+                                ch.inProgress.services?.[0]?.service_name || 'Service'
+                              }`
+                            : `Free · ${ch.barber.availability_status}`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Latest Alert Banner */}
+                <div className="rounded-xl bg-[#EDE9FE] dark:bg-purple-950/40 px-3 py-2 flex items-center gap-2 text-[11px] font-bold text-[#5B21B6] dark:text-purple-200">
+                  <Bell className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span className="truncate">
+                    {myTokenAlerts[0]?.message
+                      ? normalizeTimesInText12h(myTokenAlerts[0].message)
+                      : '1 log bachega tab WhatsApp / App Alert aayega'}
+                  </span>
+                </div>
               </div>
 
-              {/* Large Circular Progress Ring matching PDF Page 2 */}
-              <div className="relative w-24 h-24 shrink-0 flex items-center justify-center">
-                <svg className="w-24 h-24 -rotate-90" viewBox="0 0 96 96">
-                  <circle
-                    cx="48"
-                    cy="48"
-                    r="38"
-                    fill="none"
-                    stroke="rgba(255,255,255,0.22)"
-                    strokeWidth="7.5"
-                  />
-                  <circle
-                    cx="48"
-                    cy="48"
-                    r="38"
-                    fill="none"
-                    stroke="#ffffff"
-                    strokeWidth="7.5"
-                    strokeLinecap="round"
-                    strokeDasharray={`${
-                      estWaitMins === 0
-                        ? 239
-                        : Math.max(48, Math.min(210, 239 - Math.min(estWaitMins, 180) * 1.1))
-                    } 239`}
-                  />
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                  {estWaitMins === 0 ? (
-                    <>
-                      <span className="text-base font-extrabold leading-none">
-                        {myTrackedBooking?.status === 'COMPLETED'
-                          ? 'Done'
-                          : myTrackedBooking?.status === 'IN_PROGRESS'
-                          ? 'Chair'
-                          : 'Ready'}
-                      </span>
-                      <span className="text-[10px] font-bold text-white/85 mt-0.5">0 min</span>
-                    </>
-                  ) : estWaitMins >= 60 ? (
-                    <>
-                      <span className="text-base font-extrabold leading-none tabular-nums">
-                        ~{Math.floor(estWaitMins / 60)}h {estWaitMins % 60}m
-                      </span>
-                      <span className="text-[10px] font-bold text-white/85 mt-0.5">baaki</span>
-                    </>
+              {/* Right Column on Desktop: Live Queue List + Quick Send */}
+              <div className="lg:col-span-7 space-y-2.5">
+                <div className="sb-card overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
+                  {dayQueue.length === 0 ? (
+                    <div className="p-4 text-center space-y-2">
+                      <p className="text-xs font-semibold text-slate-500">
+                        Aaj abhi koi line mein nahi hai
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('BOOKING')}
+                        className="px-4 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-bold"
+                      >
+                        Slot book karo
+                      </button>
+                    </div>
                   ) : (
-                    <>
-                      <span className="text-lg font-extrabold leading-none tabular-nums">
-                        ~{estWaitMins}
-                      </span>
-                      <span className="text-xs font-bold text-white/85 mt-0.5">min</span>
-                    </>
+                    visibleQueue.map((item, idx) => {
+                      const isMine = myTrackedBooking?.id === item.id;
+                      const statusLabel =
+                        isMine && item.status === 'WAITING'
+                          ? 'Aapka number'
+                          : item.status === 'IN_PROGRESS'
+                          ? 'Chal raha'
+                          : item.status === 'COMPLETED'
+                          ? 'Ho gaya'
+                          : 'Line mein';
+
+                      const statusColor =
+                        isMine && item.status === 'WAITING'
+                          ? 'text-[#DB2777]'
+                          : item.status === 'IN_PROGRESS'
+                          ? 'text-[#6D28D9]'
+                          : item.status === 'COMPLETED'
+                          ? 'text-emerald-600'
+                          : 'text-slate-500';
+
+                      return (
+                        <div
+                          key={item.id}
+                          className={`px-3.5 py-2 flex items-center justify-between gap-3 ${
+                            idx >= 4 ? 'hidden md:flex' : 'flex'
+                          } ${
+                            isMine
+                              ? 'bg-[#FDF2F8] dark:bg-pink-950/25'
+                              : ''
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span
+                              className={`text-xs font-extrabold tabular-nums w-8 shrink-0 ${
+                                isMine ? 'text-[#DB2777]' : 'text-slate-400'
+                              }`}
+                            >
+                              #{item.token_number}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="text-xs sm:text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                                {isMine ? 'Aap' : item.customer_name}
+                              </div>
+                              <div className="text-[11px] font-medium text-slate-400 truncate">
+                                {cleanDisplayName(item.barber_name).split(' ')[0]} ·{' '}
+                                {formatSlot12h(item.slot_time)}
+                              </div>
+                            </div>
+                          </div>
+                          <span className={`text-[11px] font-extrabold shrink-0 ${statusColor}`}>
+                            {statusLabel}
+                          </span>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
-              </div>
-            </div>
 
-            {/* ABHI CHAL RAHA (Chair cards) */}
-            <div className="space-y-1.5">
-              <div className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
-                ABHI CHAL RAHA
-              </div>
-              <div className="grid grid-cols-2 gap-2.5">
-                {activeChairs.slice(0, 2).map((ch, idx) => {
-                  const barberShort = cleanDisplayName(ch.barber.name).split(' ')[0];
+                {myTrackedBooking && (() => {
+                  const assignedBarber = data.staff.find((s) => s.id === myTrackedBooking.barber_id);
+                  const barberPhone10 = cleanPhone10(assignedBarber?.phone);
+                  const salonPhone10 = cleanPhone10(data.salon.phone);
+                  const hasDirectStaffPhone =
+                    Boolean(assignedBarber) &&
+                    barberPhone10.length === 10 &&
+                    barberPhone10 !== salonPhone10;
+                  const barberShort = cleanDisplayName(
+                    assignedBarber?.name || myTrackedBooking.barber_name
+                  ).split(' ')[0];
+
+                  const bookingMsg = buildCustomerBookingToSalonText({
+                    salonName: data.salon.name,
+                    customerName: myTrackedBooking.customer_name,
+                    customerPhone: myTrackedBooking.customer_phone,
+                    tokenNumber: myTrackedBooking.token_number,
+                    servicesText:
+                      myTrackedBooking.services?.map((s) => s.service_name).join(' + ') ||
+                      'Salon Service',
+                    barberName: cleanDisplayName(myTrackedBooking.barber_name),
+                    bookingDate: myTrackedBooking.booking_date,
+                    slotTime: myTrackedBooking.slot_time,
+                    totalAmount: Number(myTrackedBooking.total_amount || 0),
+                  });
                   return (
-                    <div key={ch.barber.id} className="sb-card p-3 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className={`w-8 h-8 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${getAvatarColorClass(
-                            idx
-                          )}`}
-                        >
-                          {getSingleInitial(barberShort)}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-extrabold text-[#141028] dark:text-white truncate">
-                            {barberShort}
-                          </div>
-                          <div className="text-[10px] text-slate-400">
-                            Chair {ch.chairNo}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-[11px] font-bold text-[#141028] dark:text-slate-200 truncate">
-                        {ch.inProgress
-                          ? `#${ch.inProgress.token_number} · ${
-                              ch.inProgress.services?.[0]?.service_name || 'Service'
-                            }`
-                          : `Free · ${ch.barber.availability_status}`}
-                      </div>
-                      <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${
-                            ch.inProgress ? 'bg-[#6C3BF5] w-3/4' : 'bg-emerald-500 w-1/4'
-                          }`}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Live Queue List (5 rows cleanly visible on 1 screen) */}
-            <div className="sb-card overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
-              {dayQueue.length === 0 ? (
-                <div className="p-5 text-center space-y-2.5">
-                  <p className="text-xs font-semibold text-slate-500">
-                    Aaj abhi koi line mein nahi hai
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('BOOKING')}
-                    className="px-4 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-bold"
-                  >
-                    Slot book karo
-                  </button>
-                </div>
-              ) : (
-                visibleQueue.map((item) => {
-                  const isMine = myTrackedBooking?.id === item.id;
-                  const statusLabel =
-                    isMine && item.status === 'WAITING'
-                      ? 'Aapka number'
-                      : item.status === 'IN_PROGRESS'
-                      ? 'Chal raha'
-                      : item.status === 'COMPLETED'
-                      ? 'Ho gaya'
-                      : 'Line mein';
-
-                  const badgeClass =
-                    isMine && item.status === 'WAITING'
-                      ? 'bg-[#FCE7F3] text-[#DB2777]'
-                      : item.status === 'IN_PROGRESS'
-                      ? 'bg-[#EDE9FE] text-[#6D28D9]'
-                      : item.status === 'COMPLETED'
-                      ? 'bg-emerald-100 text-emerald-700'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500';
-
-                  return (
-                    <div
-                      key={item.id}
-                      className={`px-3.5 py-2.5 flex items-center justify-between gap-3 ${
-                        isMine
-                          ? 'bg-[#FDF2F8] dark:bg-pink-950/25 border-y border-pink-200/70 dark:border-pink-800/50'
-                          : ''
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <span
-                          className={`text-xs font-extrabold tabular-nums w-8 shrink-0 ${
-                            isMine ? 'text-[#DB2777]' : 'text-slate-400'
-                          }`}
-                        >
-                          #{item.token_number}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
-                            {isMine ? 'Aap' : item.customer_name}
-                          </div>
-                          <div className="text-[11px] font-semibold text-slate-400 truncate">
-                            {cleanDisplayName(item.barber_name).split(' ')[0]} ·{' '}
-                            {formatSlot12h(item.slot_time)}
-                          </div>
-                        </div>
-                      </div>
-                      <span
-                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 ${badgeClass}`}
-                      >
-                        {statusLabel}
-                      </span>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Notification Promise / Latest Hindi Alert Banner */}
-            <div className="rounded-2xl bg-[#EDE9FE] dark:bg-purple-950/40 px-3.5 py-3 flex items-center gap-2.5 text-xs font-bold text-[#5B21B6] dark:text-purple-200">
-              <Bell className="w-4 h-4 text-amber-500 shrink-0" />
-              <span className="leading-snug">
-                {myTokenAlerts[0]?.message
-                  ? normalizeTimesInText12h(myTokenAlerts[0].message)
-                  : '1 log bachega tab WhatsApp / App Alert aayega'}
-              </span>
-            </div>
-
-            {myTrackedBooking && (() => {
-              const assignedBarber = data.staff.find((s) => s.id === myTrackedBooking.barber_id);
-              const barberPhone10 = cleanPhone10(assignedBarber?.phone);
-              const salonPhone10 = cleanPhone10(data.salon.phone);
-              const hasDirectStaffPhone =
-                Boolean(assignedBarber) &&
-                barberPhone10.length === 10 &&
-                barberPhone10 !== salonPhone10;
-              const barberShort = cleanDisplayName(
-                assignedBarber?.name || myTrackedBooking.barber_name
-              ).split(' ')[0];
-
-              const bookingMsg = buildCustomerBookingToSalonText({
-                salonName: data.salon.name,
-                customerName: myTrackedBooking.customer_name,
-                customerPhone: myTrackedBooking.customer_phone,
-                tokenNumber: myTrackedBooking.token_number,
-                servicesText:
-                  myTrackedBooking.services?.map((s) => s.service_name).join(' + ') ||
-                  'Salon Service',
-                barberName: cleanDisplayName(myTrackedBooking.barber_name),
-                bookingDate: myTrackedBooking.booking_date,
-                slotTime: myTrackedBooking.slot_time,
-                totalAmount: Number(myTrackedBooking.total_amount || 0),
-              });
-              return (
-                <div className="sb-card p-3 space-y-2.5">
-                  <div className="space-y-1.5">
-                    <div className="text-[11px] font-extrabold tracking-wider text-slate-500 uppercase">
-                      {hasDirectStaffPhone
-                        ? '1-TAP SALON KO BHEJO'
-                        : `1-TAP SALON / ${barberShort.toUpperCase()} KO BHEJO`}
-                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <a
-                        href={buildWhatsAppUrl(data.salon.phone, bookingMsg)}
+                        href={buildWhatsAppUrl(
+                          hasDirectStaffPhone && assignedBarber ? assignedBarber.phone : data.salon.phone,
+                          bookingMsg
+                        )}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                        className="py-2.5 px-3 rounded-xl bg-emerald-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[42px] whitespace-nowrap"
                       >
-                        <MessageCircle className="w-4 h-4" />
-                        <span>Salon WhatsApp</span>
+                        <MessageCircle className="w-4 h-4 shrink-0" />
+                        <span>
+                          {hasDirectStaffPhone ? `${barberShort} WhatsApp` : 'Salon WhatsApp'}
+                        </span>
                       </a>
                       <a
-                        href={buildSmsUrl(data.salon.phone, bookingMsg)}
-                        className="py-2.5 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                        href={buildSmsUrl(
+                          hasDirectStaffPhone && assignedBarber ? assignedBarber.phone : data.salon.phone,
+                          bookingMsg
+                        )}
+                        className="py-2.5 px-3 rounded-xl bg-sky-600 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 min-h-[42px] whitespace-nowrap"
                       >
-                        <MessageSquare className="w-4 h-4" />
-                        <span>Salon SMS</span>
+                        <MessageSquare className="w-4 h-4 shrink-0" />
+                        <span>{hasDirectStaffPhone ? `${barberShort} SMS` : 'Salon SMS'}</span>
                       </a>
                     </div>
-                  </div>
-
-                  {hasDirectStaffPhone && assignedBarber && (
-                    <div className="space-y-1.5 pt-2 border-t border-slate-100 dark:border-slate-800">
-                      <div className="text-[11px] font-extrabold tracking-wider text-[#6C3BF5] uppercase">
-                        SEEDHE STYLIST KO BHEJO ({cleanDisplayName(assignedBarber.name)})
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <a
-                          href={buildWhatsAppUrl(assignedBarber.phone, bookingMsg)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="py-2.5 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
-                        >
-                          <MessageCircle className="w-4 h-4" />
-                          <span>{barberShort} WhatsApp</span>
-                        </a>
-                        <a
-                          href={buildSmsUrl(assignedBarber.phone, bookingMsg)}
-                          className="py-2.5 rounded-xl bg-slate-800 dark:bg-slate-700 text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
-                        >
-                          <MessageSquare className="w-4 h-4" />
-                          <span>{barberShort} SMS</span>
-                        </a>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+                  );
+                })()}
+              </div>
+            </div>
           </div>
         )}
 
-        {/* SCREEN 6: BILLING (Separate tab next to Queue matching PDF Page 6 on 1 screen) */}
+        {/* SCREEN 6: BILLING (Zero-scroll mobile + 2-column desktop) */}
         {activeTab === 'BILLING' && (
-          <div className="space-y-3 max-w-xl mx-auto">
+          <div className="space-y-2.5 md:space-y-4">
             <div>
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
                 Billing
               </h1>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
+              <p className="hidden sm:block text-xs text-slate-500 dark:text-slate-400">
                 Bill dekho, UPI pay karo, receipt WhatsApp pe
               </p>
             </div>
 
-            {/* Customer Card */}
-            <div className="sb-card p-3.5 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-full bg-[#7C5DFA] text-white font-extrabold text-sm flex items-center justify-center shrink-0">
-                  {getInitials(billingPreview.customerLabel)}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
-                    {billingPreview.customerLabel}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 md:gap-5 items-start">
+              {/* Left Column: Customer + Itemized Receipt */}
+              <div className="lg:col-span-6 space-y-2.5">
+                <div className="sb-card p-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-9 h-9 rounded-full bg-[#7C5DFA] text-white font-extrabold text-xs flex items-center justify-center shrink-0">
+                      {getInitials(billingPreview.customerLabel)}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate">
+                        {billingPreview.customerLabel}
+                      </div>
+                      <div className="text-[11px] text-slate-500 truncate">
+                        {billingPreview.stylistName.split(' ')[0]} · Chair {billingPreview.chairNo}
+                        {billingPreview.tokenNumber ? ` · #${billingPreview.tokenNumber}` : ''}
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-xs text-slate-500 truncate">
-                    {billingPreview.stylistName.split(' ')[0]} · Chair {billingPreview.chairNo}
-                    {billingPreview.tokenNumber ? ` · #${billingPreview.tokenNumber}` : ''}
-                  </div>
-                </div>
-              </div>
-              <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-bold shrink-0">
-                {billingPreview.statusLabel}
-              </span>
-            </div>
-
-            {/* Itemized Receipt Card */}
-            <div className="sb-card p-3.5 space-y-2">
-              {billingPreview.items.slice(0, 4).map((srv) => (
-                <div key={srv.id} className="flex items-center justify-between text-xs sm:text-sm">
-                  <span className="font-semibold text-[#141028] dark:text-slate-200 truncate pr-3">
-                    {srv.name}
-                  </span>
-                  <span className="font-bold text-[#141028] dark:text-white tabular-nums shrink-0">
-                    ₹{srv.price}
+                  <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400 shrink-0">
+                    {billingPreview.statusLabel}
                   </span>
                 </div>
-              ))}
-              {billingPreview.discountAmount > 0 && (
-                <>
-                  <div className="border-t border-slate-100 dark:border-slate-800 pt-2 flex items-center justify-between text-xs text-slate-500">
-                    <span>Subtotal</span>
-                    <span className="font-bold tabular-nums">₹{billingPreview.subtotal}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                    <span className="truncate pr-2">
-                      Discount ({billingPreview.appliedOfferTitle || 'Offer'})
-                    </span>
-                    <span className="tabular-nums shrink-0">
-                      −₹{billingPreview.discountAmount}
-                    </span>
-                  </div>
-                </>
-              )}
-              <div className="border-t border-dashed border-slate-200 dark:border-slate-700 pt-2 flex items-center justify-between">
-                <span className="text-sm font-extrabold text-[#141028] dark:text-white">
-                  Total
-                </span>
-                <span className="text-xl font-extrabold text-[#6C3BF5] tabular-nums">
-                  ₹{billingPreview.total}
-                </span>
-              </div>
-            </div>
 
-            {/* PAYMENT Toggle */}
-            <div className="space-y-1.5">
-              <div className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
-                PAYMENT
+                <div className="sb-card p-3.5 space-y-2">
+                  {billingPreview.items.slice(0, 4).map((srv) => (
+                    <div key={srv.id} className="flex items-center justify-between text-xs sm:text-sm">
+                      <span className="font-semibold text-[#141028] dark:text-slate-200 truncate pr-3">
+                        {srv.name}
+                      </span>
+                      <span className="font-bold text-[#141028] dark:text-white tabular-nums shrink-0">
+                        ₹{srv.price}
+                      </span>
+                    </div>
+                  ))}
+                  {billingPreview.discountAmount > 0 && (
+                    <>
+                      <div className="border-t border-slate-100 dark:border-slate-800 pt-1.5 flex items-center justify-between text-xs text-slate-500">
+                        <span>Subtotal</span>
+                        <span className="font-bold tabular-nums">₹{billingPreview.subtotal}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                        <span className="truncate pr-2">
+                          Discount ({billingPreview.appliedOfferTitle || 'Offer'})
+                        </span>
+                        <span className="tabular-nums shrink-0">
+                          −₹{billingPreview.discountAmount}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  <div className="border-t border-dashed border-slate-200 dark:border-slate-700 pt-2 flex items-center justify-between">
+                    <span className="text-sm font-extrabold text-[#141028] dark:text-white">
+                      Total
+                    </span>
+                    <span className="text-xl font-extrabold text-[#6C3BF5] tabular-nums">
+                      ₹{billingPreview.total}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-1.5 bg-slate-200/70 dark:bg-slate-900 p-1 rounded-2xl">
-                {(
-                  [
-                    { id: 'CASH', label: 'Cash' },
-                    { id: 'UPI', label: 'UPI' },
-                  ] as const
-                ).map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setBillingMode(m.id)}
-                    className={`py-2 rounded-xl text-xs font-extrabold transition-all min-h-[38px] ${
-                      billingMode === m.id
-                        ? 'bg-[#6C3BF5] text-white shadow-sm'
-                        : 'text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            </div>
 
-            {/* QR / Cash Card */}
-            {billingMode === 'UPI' ? (
-              <div className="sb-card p-3.5 flex items-center gap-3.5">
-                {billingQrUrl ? (
-                  <img
-                    src={billingQrUrl}
-                    alt="UPI QR Code"
-                    className="w-20 h-20 rounded-xl border border-slate-200 bg-white p-1 shrink-0"
-                  />
+              {/* Right Column: Payment Mode + QR + WhatsApp/SMS */}
+              <div className="lg:col-span-6 space-y-2.5">
+                <div className="grid grid-cols-2 gap-1.5 bg-slate-200/70 dark:bg-slate-900 p-1 rounded-2xl">
+                  {(
+                    [
+                      { id: 'CASH', label: 'Cash' },
+                      { id: 'UPI', label: 'UPI' },
+                    ] as const
+                  ).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setBillingMode(m.id)}
+                      className={`py-2 rounded-xl text-xs font-extrabold transition-all min-h-[38px] ${
+                        billingMode === m.id
+                          ? 'bg-[#6C3BF5] text-white shadow-sm'
+                          : 'text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+
+                {billingMode === 'UPI' ? (
+                  <div className="sb-card p-3 flex items-center gap-3">
+                    {billingQrUrl ? (
+                      <img
+                        src={billingQrUrl}
+                        alt="UPI QR Code"
+                        className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl border border-slate-200 bg-white p-1 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 flex items-center justify-center shrink-0">
+                        <QrCode className="w-9 h-9 text-[#141028] dark:text-slate-200" />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="text-lg sm:text-xl font-extrabold text-[#141028] dark:text-white tabular-nums leading-none">
+                        ₹{billingPreview.total}
+                      </div>
+                      <div className="text-[11px] text-slate-500">Scan karke UPI se pay</div>
+                      {billingUpiLinks && (
+                        <div className="flex flex-wrap gap-1.5 pt-0.5">
+                          <a
+                            href={billingUpiLinks.gpay}
+                            className="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-[10px] font-bold"
+                          >
+                            GPay
+                          </a>
+                          <a
+                            href={billingUpiLinks.phonepe}
+                            className="px-2.5 py-1 rounded-lg bg-[#5F259F] text-white text-[10px] font-bold"
+                          >
+                            PhonePe
+                          </a>
+                          <a
+                            href={billingUpiLinks.paytm}
+                            className="px-2.5 py-1 rounded-lg bg-[#00BAF2] text-white text-[10px] font-bold"
+                          >
+                            Paytm
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 ) : (
-                  <div className="w-20 h-20 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 flex items-center justify-center shrink-0">
-                    <QrCode className="w-11 h-11 text-[#141028] dark:text-slate-200" />
+                  <div className="sb-card p-3.5 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xl font-extrabold text-[#141028] dark:text-white tabular-nums leading-none">
+                        ₹{billingPreview.total}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1">
+                        Counter par Cash jama karein
+                      </div>
+                    </div>
+                    <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">
+                      Cash Pay
+                    </span>
                   </div>
                 )}
-                <div className="min-w-0 flex-1 space-y-1">
-                  <div className="text-xl font-extrabold text-[#141028] dark:text-white tabular-nums leading-none">
-                    ₹{billingPreview.total}
-                  </div>
-                  <div className="text-xs text-slate-500">
-                    Scan karke UPI se pay
-                  </div>
-                  {billingUpiLinks && (
-                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+
+                {(() => {
+                  const receiptReqMsg = buildCustomerReceiptRequestText({
+                    salonName: data.salon.name,
+                    totalAmount: billingPreview.total,
+                    servicesText: billingPreview.items.map((i) => i.name).join(' + '),
+                    tokenNumber: billingPreview.tokenNumber || undefined,
+                    paymentMode: billingMode,
+                  });
+                  return (
+                    <div className="grid grid-cols-2 gap-2">
                       <a
-                        href={billingUpiLinks.gpay}
-                        className="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-[10px] font-bold"
+                        href={buildWhatsAppUrl(data.salon.phone, receiptReqMsg)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="py-3 rounded-2xl sb-gradient text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-md shadow-purple-500/20 min-h-[44px] whitespace-nowrap"
                       >
-                        GPay
+                        <MessageCircle className="w-4 h-4 shrink-0" />
+                        <span>WhatsApp Bill</span>
                       </a>
                       <a
-                        href={billingUpiLinks.phonepe}
-                        className="px-2.5 py-1 rounded-lg bg-[#5F259F] text-white text-[10px] font-bold"
+                        href={buildSmsUrl(data.salon.phone, receiptReqMsg)}
+                        className="py-3 rounded-2xl bg-sky-600 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-md shadow-sky-500/20 min-h-[44px] whitespace-nowrap"
                       >
-                        PhonePe
-                      </a>
-                      <a
-                        href={billingUpiLinks.paytm}
-                        className="px-2.5 py-1 rounded-lg bg-[#00BAF2] text-white text-[10px] font-bold"
-                      >
-                        Paytm
+                        <MessageSquare className="w-4 h-4 shrink-0" />
+                        <span>SMS Bhejo</span>
                       </a>
                     </div>
-                  )}
-                </div>
+                  );
+                })()}
               </div>
-            ) : (
-              <div className="sb-card p-3.5 flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-xl font-extrabold text-[#141028] dark:text-white tabular-nums leading-none">
-                    ₹{billingPreview.total}
-                  </div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    Counter par Cash jama karein
-                  </div>
-                </div>
-                <span className="px-3 py-1.5 rounded-xl bg-emerald-100 text-emerald-700 text-xs font-extrabold">
-                  Cash Pay
-                </span>
-              </div>
-            )}
-
-            {(() => {
-              const receiptReqMsg = buildCustomerReceiptRequestText({
-                salonName: data.salon.name,
-                totalAmount: billingPreview.total,
-                servicesText: billingPreview.items.map((i) => i.name).join(' + '),
-                tokenNumber: billingPreview.tokenNumber || undefined,
-                paymentMode: billingMode,
-              });
-              return (
-                <div className="grid grid-cols-2 gap-2.5">
-                  <a
-                    href={buildWhatsAppUrl(data.salon.phone, receiptReqMsg)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-purple-500/25 min-h-[48px]"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                    <span>WhatsApp Bill</span>
-                  </a>
-                  <a
-                    href={buildSmsUrl(data.salon.phone, receiptReqMsg)}
-                    className="py-3.5 rounded-2xl bg-sky-600 text-white font-extrabold text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-sky-500/20 min-h-[48px]"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    <span>SMS Bhejo</span>
-                  </a>
-                </div>
-              );
-            })()}
+            </div>
           </div>
         )}
 
-        {/* TAB 4: PROFILE */}
+        {/* TAB 4: PROFILE (Zero-scroll mobile + 2-column desktop) */}
         {activeTab === 'PROFILE' && (
-          <div className="max-w-xl mx-auto space-y-4">
+          <div className="space-y-2.5 md:space-y-4">
             <div>
-              <h1 className="text-3xl font-extrabold tracking-tight text-[#141028] dark:text-white">
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#141028] dark:text-white leading-tight">
                 Profile
               </h1>
-              <p className="text-sm text-slate-500 dark:text-slate-400">
+              <p className="hidden sm:block text-xs text-slate-500 dark:text-slate-400">
                 {isCustomerLoggedIn ? 'Aapka account aur pichli visits' : 'Login ya Naya Account banayein'}
               </p>
             </div>
 
-            {!isCustomerLoggedIn ? (
-              <div className="sb-card p-5 space-y-3">
-                <div className="text-base font-extrabold text-[#141028] dark:text-white">
-                  Apne mobile number se login karein
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Slot book karne, live queue dekhne aur pichli visits track karne ke liye login zaroori hai.
-                </p>
-                <button
-                  type="button"
-                  onClick={onOpenLogin}
-                  className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-2 min-h-[48px]"
-                >
-                  <LogIn className="w-4 h-4" />
-                  <span>Login / Naya Account Banayein</span>
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="sb-card p-5 space-y-4">
-                  <div className="flex items-center gap-3.5">
-                    <div className="w-12 h-12 rounded-2xl sb-gradient text-white font-extrabold text-lg flex items-center justify-center">
-                      {getSingleInitial(customerName || matchedCustomer?.name || 'C')}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-base font-extrabold text-[#141028] dark:text-white truncate">
-                        {matchedCustomer?.name || customerName || 'Customer'}
-                      </div>
-                      <div className="text-xs text-slate-500 tabular-nums">
-                        {customerPhone ? `+91 ${customerPhone}` : 'Verified Account'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-3">
-                      <div className="text-[11px] font-bold text-slate-400 uppercase">Total Visits</div>
-                      <div className="text-xl font-extrabold text-[#6C3BF5] tabular-nums">
-                        {matchedCustomer?.total_visits || customerVisits.length}
-                      </div>
-                    </div>
-                    <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-3">
-                      <div className="text-[11px] font-bold text-slate-400 uppercase">Saved Stylist</div>
-                      <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate mt-1">
-                        {cleanDisplayName(featuredStylist?.name).split(' ')[0] || 'Any'}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {customerVisits.length > 0 && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 md:gap-5 items-start">
+              {/* Left Column: Account + App Preferences */}
+              <div className="lg:col-span-6 space-y-2.5">
+                {!isCustomerLoggedIn ? (
                   <div className="sb-card p-4 space-y-2.5">
-                    <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
-                      Pichli Visits
+                    <div className="text-sm sm:text-base font-extrabold text-[#141028] dark:text-white">
+                      Apne mobile number se login karein
                     </div>
-                    <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {customerVisits.slice(0, 5).map((v) => (
-                        <div key={v.id} className="py-2.5 flex items-center justify-between gap-2 text-xs">
-                          <div>
-                            <div className="font-bold text-[#141028] dark:text-white">
-                              {v.services_summary}
-                            </div>
-                            <div className="text-slate-400">
-                              {formatShortDate(v.visit_date)} · {cleanDisplayName(v.barber_name)}
-                            </div>
-                          </div>
-                          <span className="font-extrabold text-[#141028] dark:text-white tabular-nums">
-                            ₹{v.total_bill}
-                          </span>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Slot book karne, live queue aur pichli visits dekhne ke liye login zaroori hai.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onOpenLogin}
+                      className="w-full py-3 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-2 min-h-[44px]"
+                    >
+                      <LogIn className="w-4 h-4" />
+                      <span>Login / Naya Account Banayein</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="sb-card p-3.5 space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl sb-gradient text-white font-extrabold text-base flex items-center justify-center shrink-0">
+                        {getSingleInitial(customerName || matchedCustomer?.name || 'C')}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm sm:text-base font-extrabold text-[#141028] dark:text-white truncate">
+                          {matchedCustomer?.name || customerName || 'Customer'}
                         </div>
-                      ))}
+                        <div className="text-xs text-slate-500 tabular-nums">
+                          {customerPhone ? `+91 ${customerPhone}` : 'Verified Account'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-xl bg-[#F8F7FC] dark:bg-slate-950 p-2.5">
+                        <div className="text-[10px] font-bold text-slate-400 uppercase">
+                          Total Visits
+                        </div>
+                        <div className="text-lg font-extrabold text-[#6C3BF5] tabular-nums">
+                          {matchedCustomer?.total_visits || customerVisits.length}
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-[#F8F7FC] dark:bg-slate-950 p-2.5">
+                        <div className="text-[10px] font-bold text-slate-400 uppercase">
+                          Saved Stylist
+                        </div>
+                        <div className="text-sm font-extrabold text-[#141028] dark:text-white truncate mt-0.5">
+                          {cleanDisplayName(featuredStylist?.name).split(' ')[0] || 'Any'}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
 
-                {/* Change Secret PIN */}
-                <form onSubmit={handleChangeCustomerPin} className="sb-card p-4 space-y-2.5">
-                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                    <KeyRound className="w-3.5 h-3.5 text-[#6C3BF5]" />
-                    <span>Apna Secret PIN Badlein</span>
-                  </div>
+                <div className="sb-card p-3 space-y-2">
                   <div className="grid grid-cols-2 gap-2">
-                    <input
-                      type="password"
-                      inputMode="numeric"
-                      maxLength={6}
-                      required
-                      value={curPin}
-                      onChange={(e) => setCurPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="Purana PIN"
-                      className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold tabular-nums"
-                    />
-                    <input
-                      type="password"
-                      inputMode="numeric"
-                      maxLength={6}
-                      required
-                      value={newCustPin}
-                      onChange={(e) => setNewCustPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="Naya PIN (4-6 digits)"
-                      className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2.5 text-xs font-bold tabular-nums"
-                    />
+                    <button
+                      type="button"
+                      onClick={() => setLang(lang === 'en' ? 'hi' : 'en')}
+                      className="py-2.5 px-2 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-[#141028] dark:text-white min-h-[42px] whitespace-nowrap"
+                    >
+                      {lang === 'en' ? 'Lang: Hinglish' : 'भाषा: हिन्दी'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDarkMode(!darkMode)}
+                      className="py-2.5 px-2 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-[#141028] dark:text-white flex items-center justify-center gap-1.5 min-h-[42px] whitespace-nowrap"
+                    >
+                      {darkMode ? (
+                        <Sun className="w-4 h-4 text-amber-400" />
+                      ) : (
+                        <Moon className="w-4 h-4 text-[#6C3BF5]" />
+                      )}
+                      <span>{darkMode ? 'Light Mode' : 'Dark Mode'}</span>
+                    </button>
                   </div>
-                  <button
-                    type="submit"
-                    disabled={changingPin}
-                    className="w-full py-2.5 rounded-xl bg-[#141028] dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold min-h-[44px]"
-                  >
-                    {changingPin ? 'Saving...' : 'PIN Update Karein'}
-                  </button>
-                </form>
-              </>
-            )}
 
-            {/* App Settings & Session */}
-            <div className="sb-card p-4 space-y-3">
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setLang(lang === 'en' ? 'hi' : 'en')}
-                  className="py-3 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-[#141028] dark:text-white min-h-[44px]"
-                >
-                  Language: {lang === 'en' ? 'English / Hinglish' : 'हिन्दी'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDarkMode(!darkMode)}
-                  className="py-3 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-[#141028] dark:text-white flex items-center justify-center gap-1.5 min-h-[44px]"
-                >
-                  {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-[#6C3BF5]" />}
-                  <span>{darkMode ? 'Light Mode' : 'Dark Mode'}</span>
-                </button>
+                  {onLogout && (
+                    <button
+                      type="button"
+                      onClick={onLogout}
+                      className="w-full py-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 min-h-[42px]"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>Logout Karein</span>
+                    </button>
+                  )}
+
+                  {!isCustomerApk && !data.settings.hide_staff_login && (
+                    <button
+                      type="button"
+                      onClick={onOpenLogin}
+                      className="w-full py-2.5 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-slate-600 dark:text-slate-300 flex items-center justify-center gap-1.5 min-h-[40px]"
+                    >
+                      <LogIn className="w-3.5 h-3.5" />
+                      <span>Staff / Malik Login</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <PWAInstallButton salonName={data.salon.name} compact />
+              {/* Right Column: Visits + PIN Change */}
+              {isCustomerLoggedIn && (
+                <div className="lg:col-span-6 space-y-2.5">
+                  {customerVisits.length > 0 && (
+                    <div className="sb-card p-3.5 space-y-2">
+                      <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
+                        Pichli Visits
+                      </div>
+                      <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {customerVisits.slice(0, 3).map((v, idx) => (
+                          <div
+                            key={v.id}
+                            className={`py-2 flex items-center justify-between gap-2 text-xs ${
+                              idx >= 2 ? 'hidden md:flex' : 'flex'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="font-bold text-[#141028] dark:text-white truncate">
+                                {v.services_summary}
+                              </div>
+                              <div className="text-slate-400 truncate">
+                                {formatShortDate(v.visit_date)} · {cleanDisplayName(v.barber_name)}
+                              </div>
+                            </div>
+                            <span className="font-extrabold text-[#141028] dark:text-white tabular-nums shrink-0">
+                              ₹{v.total_bill}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-              {onLogout && (
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  className="w-full py-3 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-300 font-extrabold text-sm flex items-center justify-center gap-2 min-h-[46px]"
-                >
-                  <LogOut className="w-4 h-4" />
-                  <span>Logout Karein</span>
-                </button>
-              )}
-
-              {!isCustomerApk && !data.settings.hide_staff_login && (
-                <button
-                  type="button"
-                  onClick={onOpenLogin}
-                  className="w-full py-2.5 rounded-xl bg-[#F8F7FC] dark:bg-slate-950 text-xs font-bold text-slate-600 dark:text-slate-300 flex items-center justify-center gap-1.5 min-h-[42px]"
-                >
-                  <LogIn className="w-3.5 h-3.5" />
-                  <span>Staff / Malik Login</span>
-                </button>
+                  <form onSubmit={handleChangeCustomerPin} className="sb-card p-3.5 space-y-2">
+                    <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                      <KeyRound className="w-3.5 h-3.5 text-[#6C3BF5]" />
+                      <span>Apna Secret PIN Badlein</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={6}
+                        required
+                        value={curPin}
+                        onChange={(e) => setCurPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="Purana PIN"
+                        className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums min-h-[40px]"
+                      />
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={6}
+                        required
+                        value={newCustPin}
+                        onChange={(e) => setNewCustPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="Naya PIN (4-6 digits)"
+                        className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums min-h-[40px]"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={changingPin}
+                      className="w-full py-2.5 rounded-xl bg-[#141028] dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold min-h-[42px]"
+                    >
+                      {changingPin ? 'Saving...' : 'PIN Update Karein'}
+                    </button>
+                  </form>
+                </div>
               )}
             </div>
           </div>
         )}
       </main>
 
-      {/* Fixed Bottom 5-Tab Bar (Home · Booking · Queue · Billing · Profile) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800 grid grid-cols-5 h-14 pb-[env(safe-area-inset-bottom)]">
+      {/* Fixed Bottom 5-Tab Bar (Safe-area padded so labels never clip at bottom) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800 grid grid-cols-5 pt-1.5 pb-[max(0.45rem,env(safe-area-inset-bottom))]">
         {(
           [
             { id: 'HOME', label: 'Home', icon: Home },
@@ -2284,15 +2195,13 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
             >
               <div
                 className={`w-8 h-6 rounded-xl flex items-center justify-center transition-colors ${
-                  active
-                    ? 'bg-[#6C3BF5] text-white'
-                    : 'text-slate-400'
+                  active ? 'bg-[#6C3BF5] text-white' : 'text-slate-400'
                 }`}
               >
                 <Icon className="w-4 h-4" />
               </div>
               <span
-                className={`text-[10px] font-bold ${
+                className={`text-[10px] font-bold leading-none ${
                   active ? 'text-[#6C3BF5]' : 'text-slate-400'
                 }`}
               >

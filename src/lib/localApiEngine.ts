@@ -291,8 +291,8 @@ function getLocalPins(): LocalSecurityStore {
     // Ignore storage error
   }
   return {
-    ownerClaimed: true,
-    ownerPin: '1234',
+    ownerClaimed: false,
+    ownerPin: '',
     ownerRecoveryCode: '',
     staffPins: {},
     receptionPins: {},
@@ -337,6 +337,7 @@ export async function handleLocalApiRequest(path: string, init?: RequestInit): P
     const pins = getLocalPins();
     return jsonResponse({
       ...state,
+      needsOwnerSetup: !pins.ownerClaimed,
       hasOwnerRecoveryCode: Boolean(pins.ownerRecoveryCode),
     });
   }
