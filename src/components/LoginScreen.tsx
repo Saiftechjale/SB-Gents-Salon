@@ -1,6 +1,24 @@
 import React, { useState } from 'react';
-import { ArrowRight, Eye, EyeOff, Lock, Scissors, ShieldCheck, User, X } from 'lucide-react';
+import {
+  ArrowRight,
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Lock,
+  Scissors,
+  ShieldCheck,
+  User,
+  X,
+} from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import {
+  INDIAN_MOBILE_REGEX,
+  isWeakPin,
+  PIN_REGEX,
+  WEAK_PIN_MSG,
+} from '../lib/pinSecurity';
 
 export type AppPortalRole = 'CUSTOMER' | 'RECEPTION' | 'STAFF' | 'MALIK';
 
@@ -28,9 +46,6 @@ const ALL_PORTAL_ROLES: { id: AppPortalRole; label: string }[] = [
   { id: 'MALIK', label: 'Malik' },
 ];
 
-const INDIAN_MOBILE_RE = /^[6-9]\d{9}$/;
-const PIN_RE = /^\d{4,6}$/;
-
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   salonName,
   needsOwnerSetup = false,
@@ -50,7 +65,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       : initialRole;
 
   const [selectedRole, setSelectedRole] = useState<AppPortalRole>(safeInitialRole);
-  const [customerMode, setCustomerMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
+  const [customerMode, setCustomerMode] = useState<'LOGIN' | 'REGISTER' | 'FORGOT'>('LOGIN');
+  const [ownerForgotMode, setOwnerForgotMode] = useState<boolean>(false);
 
   const [phone, setPhone] = useState<string>(() =>
     initialPhone.replace(/\D/g, '').slice(-10)
@@ -58,12 +74,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [pin, setPin] = useState<string>('');
   const [showPin, setShowPin] = useState<boolean>(false);
 
-  // Customer registration name
+  // Customer registration & forgot PIN fields
   const [customerName, setCustomerName] = useState<string>('');
+  const [custResetCode, setCustResetCode] = useState<string>('');
 
-  // First-time Malik setup fields
+  // First-time Malik setup & recovery fields
   const [setupSalonName, setSetupSalonName] = useState<string>(salonName || 'My Salon');
   const [setupOwnerName, setSetupOwnerName] = useState<string>('');
+  const [ownerRecoveryCodeInput, setOwnerRecoveryCodeInput] = useState<string>('');
+  const [pendingRecoveryModal, setPendingRecoveryModal] = useState<{
+    code: string;
+    phone: string;
+    token?: string;
+    displayName?: string;
+    isFirstSetup: boolean;
+  } | null>(null);
+  const [copiedRecovery, setCopiedRecovery] = useState<boolean>(false);
 
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
@@ -84,6 +110,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   };
 
+  const handleCopyRecoveryCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedRecovery(true);
+      setTimeout(() => setCopiedRecovery(false), 2000);
+    } catch {
+      // Fallback ignored if clipboard unavailable
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -96,16 +132,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         setError('Salon ka naam aur Malik ka naam daalein');
         return;
       }
-      if (!INDIAN_MOBILE_RE.test(cleanPhone)) {
+      if (!INDIAN_MOBILE_REGEX.test(cleanPhone)) {
         setError('Apna real 10-digit Indian mobile number (6-9 se shuru) daalein');
         return;
       }
-      if (!PIN_RE.test(cleanPin)) {
+      if (!PIN_REGEX.test(cleanPin)) {
         setError('4 se 6 digit ka Secret PIN banayein');
         return;
       }
-      if (['1234', '0000', '1111', '2222', '9999'].includes(cleanPin)) {
-        setError('Aasan PIN (1234/0000) na rakhein, apna alag PIN chunein');
+      if (isWeakPin(cleanPin)) {
+        setError(WEAK_PIN_MSG);
         return;
       }
 
@@ -126,6 +162,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           setError(json.error || 'Owner setup nahi ho paya');
           return;
         }
+        if (json.recoveryCode) {
+          setPendingRecoveryModal({
+            code: json.recoveryCode,
+            phone: cleanPhone,
+            token: json.token,
+            displayName: setupOwnerName.trim(),
+            isFirstSetup: true,
+          });
+          return;
+        }
         onSuccess('MALIK', cleanPhone, undefined, json.token, setupOwnerName.trim());
       } catch (err) {
         setError(String(err));
@@ -135,14 +181,110 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       return;
     }
 
-    // 2. Customer Real Mobile + PIN Login / Registration
+    // 1B. Malik Forgot PIN / Mobile via Master Recovery Code
+    if (selectedRole === 'MALIK' && ownerForgotMode) {
+      const cleanRecovery = ownerRecoveryCodeInput.trim().toUpperCase();
+      if (cleanRecovery.length < 6) {
+        setError('Apna Master Recovery Code (e.g. SB-XXXX-YYYY) daalein');
+        return;
+      }
+      if (!INDIAN_MOBILE_REGEX.test(cleanPhone)) {
+        setError('Apna naya ya registered 10-digit Indian mobile number daalein');
+        return;
+      }
+      if (!PIN_REGEX.test(cleanPin)) {
+        setError('Naya 4 se 6 digit Secret PIN daalein');
+        return;
+      }
+      if (isWeakPin(cleanPin)) {
+        setError(WEAK_PIN_MSG);
+        return;
+      }
+
+      setSubmitting(true);
+      try {
+        const res = await apiFetch('/api/auth/owner/recover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            recoveryCode: cleanRecovery,
+            phone: cleanPhone,
+            newPin: cleanPin,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.verified) {
+          setError(json.error || 'Recovery nahi ho payi');
+          return;
+        }
+        if (json.newRecoveryCode) {
+          setPendingRecoveryModal({
+            code: json.newRecoveryCode,
+            phone: cleanPhone,
+            token: json.token,
+            isFirstSetup: false,
+          });
+          return;
+        }
+        onSuccess('MALIK', cleanPhone, undefined, json.token);
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // 2. Customer Real Mobile + PIN Login / Registration / Forgot PIN
     if (selectedRole === 'CUSTOMER') {
-      if (!INDIAN_MOBILE_RE.test(cleanPhone)) {
+      if (!INDIAN_MOBILE_REGEX.test(cleanPhone)) {
         setError('Apna real 10-digit mobile number (6-9 se shuru) daalein');
         return;
       }
-      if (!PIN_RE.test(cleanPin)) {
+      if (!PIN_REGEX.test(cleanPin)) {
         setError('4 se 6 digit ka Secret PIN daalein');
+        return;
+      }
+
+      if (customerMode === 'FORGOT') {
+        const cleanResetCode = custResetCode.trim();
+        if (!/^\d{6}$/.test(cleanResetCode)) {
+          setError('Salon Malik se mila 6-digit Reset Code daalein');
+          return;
+        }
+        if (isWeakPin(cleanPin)) {
+          setError(WEAK_PIN_MSG);
+          return;
+        }
+
+        setSubmitting(true);
+        try {
+          const res = await apiFetch('/api/auth/customer/forgot-pin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              phone: cleanPhone,
+              resetCode: cleanResetCode,
+              newPin: cleanPin,
+            }),
+          });
+          const json = await res.json();
+          if (!res.ok || !json.verified) {
+            setError(json.error || 'PIN reset nahi ho paya');
+            return;
+          }
+          onSuccess(
+            'CUSTOMER',
+            cleanPhone,
+            undefined,
+            json.token,
+            json.customer?.name
+          );
+        } catch (err) {
+          setError(String(err));
+        } finally {
+          setSubmitting(false);
+        }
         return;
       }
 
@@ -150,6 +292,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         const cleanName = customerName.trim();
         if (cleanName.length < 2) {
           setError('Apna naam daalein (kam se kam 2 akshar)');
+          return;
+        }
+        if (isWeakPin(cleanPin)) {
+          setError(WEAK_PIN_MSG);
           return;
         }
 
@@ -219,11 +365,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
 
     // 3. Strictly Separated Staff / Reception / Malik Verification
-    if (!INDIAN_MOBILE_RE.test(cleanPhone)) {
+    if (!INDIAN_MOBILE_REGEX.test(cleanPhone)) {
       setError('Apna registered 10-digit mobile number daalein');
       return;
     }
-    if (!PIN_RE.test(cleanPin)) {
+    if (!PIN_REGEX.test(cleanPin)) {
       setError('4 se 6 digit ka Secret PIN daalein');
       return;
     }
@@ -268,6 +414,56 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     ? ALL_PORTAL_ROLES
     : [{ id: 'CUSTOMER', label: 'Customer' }];
 
+  // Master Recovery Code One-Time Reveal View
+  if (pendingRecoveryModal) {
+    return (
+      <div className="min-h-screen bg-[#F8F7FC] dark:bg-slate-950 flex flex-col items-center justify-center p-5">
+        <div className="w-full max-w-sm sb-card p-6 space-y-5 text-center">
+          <div className="w-16 h-16 rounded-3xl sb-gradient flex items-center justify-center mx-auto shadow-lg shadow-purple-500/25">
+            <KeyRound className="w-8 h-8 text-white" />
+          </div>
+          <div className="space-y-1.5">
+            <h2 className="text-xl font-extrabold text-[#141028] dark:text-white">
+              {pendingRecoveryModal.isFirstSetup
+                ? 'Malik Master Recovery Code'
+                : 'Naya Master Recovery Code'}
+            </h2>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              Is code ko safe diary ya phone notes me likh lein. Agar kabhi Malik apna mobile number ya PIN bhool jayein, to isi code se account recover hoga.
+            </p>
+          </div>
+
+          <div className="rounded-2xl bg-[#F3EFFF] dark:bg-slate-900 border border-[#6C3BF5]/30 p-4 space-y-2.5">
+            <div className="text-2xl font-extrabold tracking-widest text-[#6C3BF5] dark:text-purple-300 tabular-nums select-all">
+              {pendingRecoveryModal.code}
+            </div>
+            <button
+              type="button"
+              onClick={() => handleCopyRecoveryCode(pendingRecoveryModal.code)}
+              className="w-full py-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-extrabold text-[#141028] dark:text-white flex items-center justify-center gap-1.5 min-h-[44px]"
+            >
+              {copiedRecovery ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-[#6C3BF5]" />}
+              <span>{copiedRecovery ? 'Copy Ho Gaya ✓' : 'Recovery Code Copy Karein'}</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              const info = pendingRecoveryModal;
+              setPendingRecoveryModal(null);
+              onSuccess('MALIK', info.phone, undefined, info.token, info.displayName);
+            }}
+            className="w-full py-3.5 rounded-2xl sb-gradient text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 min-h-[48px]"
+          >
+            <span>Maine Save Kar Liya · Dashboard Kholein</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F8F7FC] dark:bg-slate-950 flex flex-col items-center justify-center p-5 relative">
       {onClose && !needsOwnerSetup && (
@@ -289,7 +485,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             className="w-18 h-18 rounded-3xl sb-gradient flex items-center justify-center mx-auto shadow-xl shadow-purple-500/25 focus:outline-none active:scale-95 transition-transform"
             aria-label={salonName}
           >
-            {isOwnerSetupView ? (
+            {isOwnerSetupView || ownerForgotMode ? (
               <ShieldCheck className="w-9 h-9 text-white" />
             ) : (
               <Scissors className="w-9 h-9 text-white" />
@@ -297,14 +493,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           </button>
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-[#141028] dark:text-white">
-              {isOwnerSetupView ? 'Malik Account Setup' : salonName}
+              {isOwnerSetupView
+                ? 'Malik Account Setup'
+                : selectedRole === 'MALIK' && ownerForgotMode
+                ? 'Malik Account Recovery'
+                : salonName}
             </h1>
             <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
               {isOwnerSetupView
                 ? 'Pehli baar app setup karein — apna real number aur PIN banayein'
+                : selectedRole === 'MALIK' && ownerForgotMode
+                ? 'Master Recovery Code se naya mobile & PIN set karein'
                 : selectedRole === 'CUSTOMER'
                 ? customerMode === 'REGISTER'
                   ? 'Naya Customer Account banayein'
+                  : customerMode === 'FORGOT'
+                  ? 'Reset Code se naya Customer PIN banayein'
                   : 'Apne mobile aur PIN se login karein'
                 : `${selectedRole} Portal Login`}
             </p>
@@ -321,7 +525,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 setError('');
               }}
               className={`py-2.5 rounded-xl text-xs font-extrabold transition-all min-h-[44px] whitespace-nowrap ${
-                customerMode === 'LOGIN'
+                customerMode === 'LOGIN' || customerMode === 'FORGOT'
                   ? 'bg-white dark:bg-slate-800 text-[#141028] dark:text-white shadow-sm'
                   : 'text-slate-500'
               }`}
@@ -377,6 +581,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           </div>
         )}
 
+        {/* Malik Master Recovery Code Input */}
+        {selectedRole === 'MALIK' && ownerForgotMode && !isOwnerSetupView && (
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+              <KeyRound className="w-3 h-3 text-[#6C3BF5]" />
+              <span>MASTER RECOVERY CODE</span>
+            </label>
+            <input
+              type="text"
+              required
+              value={ownerRecoveryCodeInput}
+              onChange={(e) => setOwnerRecoveryCodeInput(e.target.value.toUpperCase())}
+              placeholder="SB-XXXX-YYYY"
+              className="sb-card w-full px-4 py-3.5 text-base font-extrabold tracking-widest text-[#141028] dark:text-white uppercase focus:outline-none"
+            />
+          </div>
+        )}
+
         {/* Customer Registration Name */}
         {selectedRole === 'CUSTOMER' && customerMode === 'REGISTER' && !isOwnerSetupView && (
           <div className="space-y-1.5">
@@ -398,7 +620,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         {/* Mobile Number */}
         <div className="space-y-1.5">
           <label className="block text-[11px] font-bold tracking-wider text-slate-500 uppercase">
-            {selectedRole === 'CUSTOMER' ? 'REAL MOBILE NUMBER' : 'REGISTERED MOBILE NUMBER'}
+            {selectedRole === 'CUSTOMER'
+              ? 'REAL MOBILE NUMBER'
+              : selectedRole === 'MALIK' && ownerForgotMode
+              ? 'NAYA YA REGISTERED MOBILE NUMBER'
+              : 'REGISTERED MOBILE NUMBER'}
           </label>
           <div className="sb-card flex items-center gap-2 px-4 py-3.5">
             <span className="text-base font-bold text-slate-500">+91</span>
@@ -415,13 +641,35 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           </div>
         </div>
 
+        {/* Customer 6-digit Reset Code (Forgot PIN mode) */}
+        {selectedRole === 'CUSTOMER' && customerMode === 'FORGOT' && !isOwnerSetupView && (
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+              <KeyRound className="w-3 h-3 text-[#6C3BF5]" />
+              <span>MALIK SE MILA 6-DIGIT RESET CODE</span>
+            </label>
+            <input
+              type="tel"
+              inputMode="numeric"
+              maxLength={6}
+              required
+              value={custResetCode}
+              onChange={(e) => setCustResetCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="123456"
+              className="sb-card w-full px-4 py-3.5 text-lg font-extrabold tracking-[0.28em] text-[#141028] dark:text-white focus:outline-none tabular-nums"
+            />
+          </div>
+        )}
+
         {/* Secret PIN (4-6 digits) */}
         <div className="space-y-1.5">
           <label className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
             <Lock className="w-3 h-3 text-[#6C3BF5]" />
             <span>
-              {selectedRole === 'CUSTOMER' && customerMode === 'REGISTER'
-                ? 'NAYA SECRET PIN BANAYEIN (4-6 DIGITS)'
+              {isOwnerSetupView ||
+              (selectedRole === 'CUSTOMER' && customerMode !== 'LOGIN') ||
+              (selectedRole === 'MALIK' && ownerForgotMode)
+                ? 'NAYA STRONG SECRET PIN (4-6 DIGITS)'
                 : 'SECRET PIN (4-6 DIGITS)'}
             </span>
           </label>
@@ -445,6 +693,55 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
+
+          {!isOwnerSetupView && selectedRole === 'CUSTOMER' && customerMode === 'LOGIN' && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomerMode('FORGOT');
+                  setPin('');
+                  setError('');
+                }}
+                className="text-xs font-bold text-[#6C3BF5] hover:underline py-1"
+              >
+                PIN Bhool Gaye? Reset Karein
+              </button>
+            </div>
+          )}
+
+          {!isOwnerSetupView && selectedRole === 'CUSTOMER' && customerMode === 'FORGOT' && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomerMode('LOGIN');
+                  setPin('');
+                  setCustResetCode('');
+                  setError('');
+                }}
+                className="text-xs font-bold text-slate-500 hover:text-[#6C3BF5] py-1"
+              >
+                Wapas Customer Login par jayein
+              </button>
+            </div>
+          )}
+
+          {!isOwnerSetupView && selectedRole === 'MALIK' && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setOwnerForgotMode((v) => !v);
+                  setPin('');
+                  setError('');
+                }}
+                className="text-xs font-bold text-[#6C3BF5] hover:underline py-1"
+              >
+                {ownerForgotMode ? 'Wapas Malik Login par jayein' : 'PIN ya Mobile Bhool Gaye?'}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Role Selector */}
@@ -462,6 +759,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                     type="button"
                     onClick={() => {
                       setSelectedRole(r.id);
+                      setOwnerForgotMode(false);
+                      if (r.id !== 'CUSTOMER') setCustomerMode('LOGIN');
                       setPin('');
                       setError('');
                     }}
@@ -495,8 +794,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               ? 'Loading...'
               : isOwnerSetupView
               ? 'Salon Setup Complete Karein'
+              : selectedRole === 'MALIK' && ownerForgotMode
+              ? 'Account Recover & Login'
               : selectedRole === 'CUSTOMER' && customerMode === 'REGISTER'
               ? 'Account Banayein & Login Karein'
+              : selectedRole === 'CUSTOMER' && customerMode === 'FORGOT'
+              ? 'Naya PIN Set Karein & Login'
               : 'Login'}
           </span>
           <ArrowRight className="w-5 h-5" />
@@ -504,18 +807,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
         <p className="text-center text-xs text-slate-500 dark:text-slate-400">
           {isOwnerSetupView
-            ? 'Setup ke baad aap Staff aur Reception ke login bana sakte hain'
+            ? 'Setup ke baad aapko ek Master Recovery Code milega aur aap Staff/Reception bana sakte hain'
             : selectedRole === 'CUSTOMER'
-            ? customerMode === 'LOGIN'
-              ? 'PIN bhool gaye? Salon Malik se naya PIN reset karwayein.'
+            ? customerMode === 'FORGOT'
+              ? 'Salon Malik apne Customers tab se aapko 6-digit Reset Code bhejenge.'
+              : customerMode === 'LOGIN'
+              ? 'PIN bhool gaye? "PIN Bhool Gaye?" par tap karke Malik se 6-digit Reset Code lein.'
               : 'Aapka account seedhe Salon Malik ko dikhega aur slot book hoga.'
             : selectedRole === 'RECEPTION'
             ? 'Receptionist ka mobile & PIN sirf Malik banate hain'
             : selectedRole === 'STAFF'
             ? 'Har staff ka apna alag mobile number aur PIN hota hai'
+            : ownerForgotMode
+            ? 'Setup ke samay mila Master Recovery Code daalkar naya number aur PIN set karein.'
             : 'Sirf Salon Malik ke registered number aur PIN se khulega'}
         </p>
       </form>
     </div>
   );
 };
+

@@ -104,6 +104,10 @@ export default function App() {
   useEffect(() => {
     if (data?.salon.name) {
       document.title = data.salon.name;
+      const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+      if (appleTitle) appleTitle.setAttribute('content', data.salon.name);
+      const ogTitle = document.querySelector('meta[property="og:title"]');
+      if (ogTitle) ogTitle.setAttribute('content', data.salon.name);
     }
   }, [data?.salon.name]);
 

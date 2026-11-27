@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import {
   AlertTriangle,
   Check,
+  Copy,
   Download,
   FileSpreadsheet,
   KeyRound,
@@ -11,10 +12,13 @@ import {
   MessageCircle,
   MessageSquare,
   Pencil,
+  Percent,
   Plus,
   QrCode,
+  RefreshCw,
   Settings as SettingsIcon,
   ShieldCheck,
+  Tag,
   Trash2,
   TrendingUp,
   UserCheck,
@@ -24,8 +28,11 @@ import {
 } from 'lucide-react';
 import type {
   Customer,
+  OfferAccentTheme,
+  OfferDiscountType,
   ReceptionAccount,
   SalonBootstrapData,
+  SalonOffer,
   ServiceItem,
   StaffMember,
 } from '../types/salon';
@@ -38,10 +45,12 @@ import {
 } from '../lib/api';
 import { exportReportToExcel, exportReportToPDF } from '../lib/exportReports';
 import {
+  buildCustomerPinResetCodeText,
   buildCustomerUdharOrGreetingText,
   buildSmsUrl,
   buildWhatsAppUrl,
 } from '../lib/messagingTemplates';
+import { isWeakPin, WEAK_PIN_MSG } from '../lib/pinSecurity';
 import {
   getAvatarColorClass,
   getLocalTodayStr,
@@ -219,6 +228,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   const [editCustPref, setEditCustPref] = useState('');
   const [resetCustPin, setResetCustPin] = useState('');
   const [confirmDeleteCustId, setConfirmDeleteCustId] = useState<string>('');
+  const [custResetCodes, setCustResetCodes] = useState<
+    Record<string, { code: string; copied?: boolean }>
+  >({});
+  const [generatingResetForId, setGeneratingResetForId] = useState<string>('');
 
   // Settings & Customization form state
   const [salonName, setSalonName] = useState(data.salon.name);
@@ -258,11 +271,25 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
   const [editSrvActive, setEditSrvActive] = useState(true);
   const [confirmDeleteSrvId, setConfirmDeleteSrvId] = useState<string>('');
 
+  // Customer Offers & Discount Slider state
+  const [offerTitle, setOfferTitle] = useState('');
+  const [offerSubtitle, setOfferSubtitle] = useState('');
+  const [offerType, setOfferType] = useState<OfferDiscountType>('PERCENT');
+  const [offerValue, setOfferValue] = useState('20');
+  const [offerMinBill, setOfferMinBill] = useState('0');
+  const [offerPromo, setOfferPromo] = useState('');
+  const [offerTheme, setOfferTheme] = useState<OfferAccentTheme>('PURPLE');
+  const [confirmDeleteOfferId, setConfirmDeleteOfferId] = useState<string>('');
+  const [savingOffer, setSavingOffer] = useState<boolean>(false);
+
   // Expenses Add & List state
   const [newExpTitle, setNewExpTitle] = useState('');
   const [newExpAmt, setNewExpAmt] = useState('');
   const [newExpMode, setNewExpMode] = useState<'CASH' | 'UPI'>('CASH');
   const [ownerPin, setOwnerPin] = useState('');
+  const [generatedRecoveryCode, setGeneratedRecoveryCode] = useState<string>('');
+  const [recoveryCopied, setRecoveryCopied] = useState<boolean>(false);
+  const [generatingRecovery, setGeneratingRecovery] = useState<boolean>(false);
   const [serverUrlDraft, setServerUrlDraft] = useState(() => getApiBaseUrl());
 
   useEffect(() => {
@@ -318,6 +345,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
       notify('error', 'Staff login ke liye 4 se 6 digit ka PIN set karein');
       return;
     }
+    if (isWeakPin(cleanPin)) {
+      notify('error', WEAK_PIN_MSG);
+      return;
+    }
     const res = await apiFetch('/api/staff', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -362,6 +393,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
       notify('error', 'Naya PIN 4 se 6 digits ka number hona chahiye');
       return;
     }
+    if (cleanPin && isWeakPin(cleanPin)) {
+      notify('error', WEAK_PIN_MSG);
+      return;
+    }
     const res = await apiFetch(`/api/staff/${editingStaffId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -398,6 +433,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     }
     if (!/^\d{4,6}$/.test(cleanPin)) {
       notify('error', 'Reception login ke liye 4 se 6 digit PIN daalein');
+      return;
+    }
+    if (isWeakPin(cleanPin)) {
+      notify('error', WEAK_PIN_MSG);
       return;
     }
     const res = await apiFetch('/api/reception-accounts', {
@@ -438,6 +477,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     }
     if (cleanPin && !/^\d{4,6}$/.test(cleanPin)) {
       notify('error', 'PIN 4 se 6 digits ka hona chahiye');
+      return;
+    }
+    if (cleanPin && isWeakPin(cleanPin)) {
+      notify('error', WEAK_PIN_MSG);
       return;
     }
     const res = await apiFetch(`/api/reception-accounts/${editingRecId}`, {
@@ -499,6 +542,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
       notify('error', 'Naya PIN 4 se 6 digits ka number daalein');
       return;
     }
+    if (isWeakPin(cleanPin)) {
+      notify('error', WEAK_PIN_MSG);
+      return;
+    }
     const res = await apiFetch(`/api/customers/${customerId}/pin`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -508,6 +555,28 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     setResetCustPin('');
     await onRefresh();
     notify('success', 'Customer ka naya PIN set ho gaya!');
+  };
+
+  const handleGenerateCustomerResetCode = async (customerId: string) => {
+    setGeneratingResetForId(customerId);
+    try {
+      const res = await apiFetch(`/api/customers/${customerId}/reset-code`, {
+        method: 'POST',
+      });
+      if (!(await handleApiError(res, 'Reset code generate nahi ho paya'))) return;
+      const json = await res.json();
+      if (json.resetCode) {
+        setCustResetCodes((prev) => ({
+          ...prev,
+          [customerId]: { code: String(json.resetCode), copied: false },
+        }));
+        notify('success', '15-minute ka 1-time reset code ban gaya! Customer ko bhejein.');
+      }
+    } catch (e) {
+      notify('error', String(e));
+    } finally {
+      setGeneratingResetForId('');
+    }
   };
 
   const handleSaveCustomerEdit = async (e: React.FormEvent) => {
@@ -691,6 +760,10 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
       notify('error', 'Malik ka naya PIN 4 se 6 digits ka number daalein');
       return;
     }
+    if (isWeakPin(cleanOwner)) {
+      notify('error', WEAK_PIN_MSG);
+      return;
+    }
     const res = await apiFetch('/api/auth/pins', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -700,6 +773,85 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
     setOwnerPin('');
     await onRefresh();
     notify('success', 'Malik Secret PIN updated!');
+  };
+
+  const handleGenerateOwnerRecoveryCode = async () => {
+    setGeneratingRecovery(true);
+    try {
+      const res = await apiFetch('/api/auth/owner/recovery-code', {
+        method: 'POST',
+      });
+      if (!(await handleApiError(res, 'Recovery code generate nahi ho paya'))) return;
+      const json = await res.json();
+      if (json.recoveryCode) {
+        setGeneratedRecoveryCode(String(json.recoveryCode));
+        setRecoveryCopied(false);
+        await onRefresh();
+        notify('success', 'Naya Master Recovery Code ban gaya — ise safe note kar lein!');
+      }
+    } catch (e) {
+      notify('error', String(e));
+    } finally {
+      setGeneratingRecovery(false);
+    }
+  };
+
+  const handleAddOffer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!offerTitle.trim() || Number(offerValue) <= 0) {
+      notify('error', 'Offer ka title aur sahi discount value daalein');
+      return;
+    }
+    setSavingOffer(true);
+    try {
+      const cleanVal = Math.max(1, Number(offerValue));
+      const badge =
+        offerType === 'PERCENT' ? `${Math.min(90, cleanVal)}% OFF` : `₹${cleanVal} OFF`;
+      const res = await apiFetch('/api/offers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: offerTitle.trim(),
+          subtitle: offerSubtitle.trim(),
+          badge_text: badge,
+          discount_type: offerType,
+          discount_value: offerType === 'PERCENT' ? Math.min(90, cleanVal) : cleanVal,
+          min_bill: Math.max(0, Number(offerMinBill || 0)),
+          promo_code: offerPromo.trim().toUpperCase(),
+          accent_theme: offerTheme,
+          is_active: true,
+        }),
+      });
+      if (!(await handleApiError(res, 'Offer save nahi ho paya'))) return;
+      setOfferTitle('');
+      setOfferSubtitle('');
+      setOfferValue('20');
+      setOfferMinBill('0');
+      setOfferPromo('');
+      await onRefresh();
+      notify('success', 'Offer customer slider par live ho gaya!');
+    } finally {
+      setSavingOffer(false);
+    }
+  };
+
+  const handleToggleOfferActive = async (offer: SalonOffer) => {
+    const res = await apiFetch(`/api/offers/${offer.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_active: !offer.is_active }),
+    });
+    if (!(await handleApiError(res, 'Offer update nahi hua'))) return;
+    await onRefresh();
+    notify('success', offer.is_active ? 'Offer pause kiya gaya' : 'Offer live kiya gaya');
+  };
+
+  const handleDeleteOffer = async (id: string) => {
+    const res = await apiFetch(`/api/offers/${id}`, { method: 'DELETE' });
+    if (!(await handleApiError(res, 'Offer remove nahi hua'))) return;
+    setConfirmDeleteOfferId('');
+    await onRefresh();
+    notify('success', 'Offer removed!');
   };
 
   const commissionText =
@@ -1613,17 +1765,90 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                               maxLength={6}
                               value={resetCustPin}
                               onChange={(e) => setResetCustPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                              placeholder="Customer PIN Reset (4-6 digits)"
+                              placeholder="Seedha naya PIN set karein (4-6 digits)"
                               className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
                             />
                             <button
                               type="button"
                               onClick={() => handleResetCustomerPin(c.id)}
-                              className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold flex items-center gap-1 whitespace-nowrap"
+                              className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold flex items-center gap-1 whitespace-nowrap min-h-[42px]"
                             >
                               <KeyRound className="w-3.5 h-3.5" />
-                              <span>Reset PIN</span>
+                              <span>Set PIN</span>
                             </button>
+                          </div>
+
+                          {/* 1-Time 6-Digit Customer Self-Reset Code */}
+                          <div className="rounded-xl bg-[#F8F7FC] dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                                Customer khud naya PIN banaye (15 min 1-time code):
+                              </span>
+                              <button
+                                type="button"
+                                disabled={generatingResetForId === c.id}
+                                onClick={() => handleGenerateCustomerResetCode(c.id)}
+                                className="px-2.5 py-1.5 rounded-lg bg-[#6C3BF5] text-white text-[11px] font-extrabold whitespace-nowrap min-h-[36px]"
+                              >
+                                {generatingResetForId === c.id ? 'Ban raha...' : 'Reset Code Banayein'}
+                              </button>
+                            </div>
+
+                            {custResetCodes[c.id]?.code && (() => {
+                              const resetEntry = custResetCodes[c.id];
+                              const shareMsg = buildCustomerPinResetCodeText({
+                                salonName: data.salon.name,
+                                customerName: c.name,
+                                resetCode: resetEntry.code,
+                              });
+                              return (
+                                <div className="pt-1 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div>
+                                      <div className="text-[10px] font-bold uppercase text-slate-400">
+                                        1-Time Reset Code
+                                      </div>
+                                      <div className="text-lg font-extrabold tracking-widest text-[#6C3BF5] tabular-nums">
+                                        {resetEntry.code}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          navigator.clipboard?.writeText(resetEntry.code);
+                                          setCustResetCodes((prev) => ({
+                                            ...prev,
+                                            [c.id]: { ...resetEntry, copied: true },
+                                          }));
+                                          notify('success', 'Reset code copy ho gaya!');
+                                        }}
+                                        className="px-2.5 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-[11px] font-bold flex items-center gap-1"
+                                      >
+                                        <Copy className="w-3 h-3" />
+                                        <span>{resetEntry.copied ? 'Copied' : 'Copy'}</span>
+                                      </button>
+                                      <a
+                                        href={buildWhatsAppUrl(c.phone, shareMsg)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-[11px] font-bold flex items-center gap-1"
+                                      >
+                                        <MessageCircle className="w-3 h-3" />
+                                        <span>WA</span>
+                                      </a>
+                                      <a
+                                        href={buildSmsUrl(c.phone, shareMsg)}
+                                        className="px-2.5 py-1.5 rounded-lg bg-sky-600 text-white text-[11px] font-bold flex items-center gap-1"
+                                      >
+                                        <MessageSquare className="w-3 h-3" />
+                                        <span>SMS</span>
+                                      </a>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
                       )}
@@ -1986,11 +2211,178 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
               )}
             </div>
 
+            {/* 3.5 Customer Offers & Discount Slider Manager */}
+            <div className="sb-card p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <Tag className="w-4 h-4 text-[#6C3BF5]" />
+                  <span>Customer Offers &amp; Discount Slider ({(data.offers || []).length})</span>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Yahan se banaye gaye offers seedhe customer ke Home screen slider aur Booking discount me dikhenge.
+              </p>
+
+              <form onSubmit={handleAddOffer} className="space-y-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    required
+                    value={offerTitle}
+                    onChange={(e) => setOfferTitle(e.target.value)}
+                    placeholder="Offer Title (e.g. Festival 20% Off)"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  />
+                  <input
+                    type="text"
+                    value={offerSubtitle}
+                    onChange={(e) => setOfferSubtitle(e.target.value)}
+                    placeholder="Short Line (e.g. Haircut + Beard par)"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold"
+                  />
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <select
+                    value={offerType}
+                    onChange={(e) => setOfferType(e.target.value as OfferDiscountType)}
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-2.5 py-2 text-xs font-bold"
+                  >
+                    <option value="PERCENT">Discount %</option>
+                    <option value="FLAT">Flat ₹ Off</option>
+                  </select>
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    max={offerType === 'PERCENT' ? 90 : 5000}
+                    value={offerValue}
+                    onChange={(e) => setOfferValue(e.target.value)}
+                    placeholder={offerType === 'PERCENT' ? 'e.g. 20%' : 'e.g. ₹50'}
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    value={offerMinBill}
+                    onChange={(e) => setOfferMinBill(e.target.value)}
+                    placeholder="Min Bill ₹"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
+                  />
+                  <input
+                    type="text"
+                    value={offerPromo}
+                    onChange={(e) => setOfferPromo(e.target.value.toUpperCase())}
+                    placeholder="Code (SAVE20)"
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold uppercase"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                  <div className="flex items-center gap-1.5">
+                    {(['PURPLE', 'GOLD', 'EMERALD', 'ROSE'] as OfferAccentTheme[]).map((th) => (
+                      <button
+                        key={th}
+                        type="button"
+                        onClick={() => setOfferTheme(th)}
+                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-extrabold border ${
+                          offerTheme === th
+                            ? 'bg-[#141028] dark:bg-white text-white dark:text-[#141028] border-transparent'
+                            : 'bg-[#F8F7FC] dark:bg-slate-950 text-slate-500 border-slate-200 dark:border-slate-800'
+                        }`}
+                      >
+                        {th}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={savingOffer}
+                    className="px-4 py-2 rounded-xl bg-[#6C3BF5] text-white text-xs font-extrabold flex items-center gap-1 min-h-[40px]"
+                  >
+                    <Percent className="w-3.5 h-3.5" />
+                    <span>{savingOffer ? 'Saving...' : 'Offer Slider Me Daalein'}</span>
+                  </button>
+                </div>
+              </form>
+
+              {(data.offers || []).length > 0 && (
+                <div className="divide-y divide-slate-100 dark:divide-slate-800 pt-1">
+                  {(data.offers || []).map((o) => {
+                    const isConfirmDel = confirmDeleteOfferId === o.id;
+                    return (
+                      <div key={o.id} className="py-2.5 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-2 py-0.5 rounded-md bg-purple-100 dark:bg-purple-950/60 text-[#6C3BF5] text-[10px] font-extrabold shrink-0">
+                              {o.badge_text}
+                            </span>
+                            <span
+                              className={`text-xs font-extrabold truncate ${
+                                o.is_active
+                                  ? 'text-[#141028] dark:text-white'
+                                  : 'text-slate-400 line-through'
+                              }`}
+                            >
+                              {o.title}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-400 tabular-nums mt-0.5">
+                            {Number(o.min_bill || 0) > 0 ? `Min ₹${o.min_bill}` : 'No min bill'}
+                            {o.promo_code ? ` · Code: ${o.promo_code}` : ''}
+                            {` · ${o.accent_theme}`}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleOfferActive(o)}
+                            className={`px-2.5 py-1.5 rounded-lg text-[10px] font-extrabold ${
+                              o.is_active
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
+                            }`}
+                          >
+                            {o.is_active ? 'LIVE' : 'PAUSED'}
+                          </button>
+                          {isConfirmDel ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteOffer(o.id)}
+                                className="px-2 py-1.5 rounded-lg bg-rose-600 text-white text-[10px] font-extrabold"
+                              >
+                                Hatao
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteOfferId('')}
+                                className="px-2 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-[10px] font-bold"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteOfferId(o.id)}
+                              className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/30 text-rose-500"
+                              aria-label="Delete offer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             {/* 4. Security PINs & Customer APK Lock */}
             <div className="sb-card p-4 space-y-3">
               <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-[#6C3BF5]" />
-                <span>Security & Customer APK Lock</span>
+                <span>Security &amp; Customer APK Lock</span>
               </div>
 
               <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 p-3 flex items-center justify-between gap-3">
@@ -2038,6 +2430,61 @@ export const MalikPortalView: React.FC<MalikPortalViewProps> = ({
                   <span>Update Malik PIN</span>
                 </button>
               </form>
+
+              {/* Malik Master Recovery Code (Recover forgotten Mobile or PIN) */}
+              <div className="rounded-2xl bg-[#F8F7FC] dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-extrabold text-[#141028] dark:text-white">
+                      Malik Master Recovery Code
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {data.hasOwnerRecoveryCode
+                        ? 'Recovery Code Active ✓ (Bhulne par mobile + PIN dono recover honge)'
+                        : 'Abhi generate karein taaki kabhi login lock na ho'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={generatingRecovery}
+                    onClick={handleGenerateOwnerRecoveryCode}
+                    className="px-3 py-2 rounded-xl bg-[#6C3BF5] text-white text-[11px] font-extrabold flex items-center gap-1 shrink-0 min-h-[38px]"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${generatingRecovery ? 'animate-spin' : ''}`} />
+                    <span>{data.hasOwnerRecoveryCode ? 'Naya Banayein' : 'Generate Code'}</span>
+                  </button>
+                </div>
+
+                {generatedRecoveryCode && (
+                  <div className="rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">
+                          Aapka Master Recovery Code (Safe Likh Lein)
+                        </div>
+                        <div className="text-lg font-extrabold tracking-widest text-amber-950 dark:text-amber-100 font-mono">
+                          {generatedRecoveryCode}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(generatedRecoveryCode);
+                          setRecoveryCopied(true);
+                          notify('success', 'Master Recovery Code copy ho gaya!');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-extrabold flex items-center gap-1"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>{recoveryCopied ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                    <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-200">
+                      Yeh code dobara nahi dikhega. Agar Malik mobile number ya PIN bhul jaye to Login screen par isse naya mobile + PIN set ho jayega.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* 5. Customer APK / Booking QR Code Generator */}

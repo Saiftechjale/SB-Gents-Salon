@@ -120,6 +120,25 @@ export interface BookingServiceItem {
   duration_minutes: number;
 }
 
+export type OfferDiscountType = 'PERCENT' | 'FLAT';
+export type OfferAccentTheme = 'PURPLE' | 'GOLD' | 'EMERALD' | 'ROSE';
+
+export interface SalonOffer {
+  id: string;
+  salon_id: string;
+  title: string;
+  subtitle: string;
+  badge_text: string;
+  discount_type: OfferDiscountType;
+  discount_value: number;
+  min_bill: number;
+  promo_code: string;
+  accent_theme: OfferAccentTheme;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Booking {
   id: string;
   salon_id: string;
@@ -136,6 +155,10 @@ export interface Booking {
   slot_time: string;
   token_number: number;
   status: BookingStatus;
+  subtotal_amount?: number;
+  discount_amount?: number;
+  applied_offer_id?: string | null;
+  applied_offer_title?: string;
   total_amount: number;
   notes: string;
   is_billed: boolean;
@@ -153,6 +176,9 @@ export interface Payment {
   barber_id?: string | null;
   barber_name?: string | null;
   payment_date: string;
+  gross_bill?: number;
+  discount_amount?: number;
+  applied_offer_title?: string;
   total_bill: number;
   cash_paid: number;
   upi_paid: number;
@@ -256,6 +282,9 @@ export interface OfflineDraftBill {
   service_ids: string[];
   services_summary: string;
   payment_date: string;
+  gross_bill?: number;
+  discount_amount?: number;
+  applied_offer_title?: string;
   total_bill: number;
   cash_paid: number;
   upi_paid: number;
@@ -274,10 +303,12 @@ export interface SalonBootstrapData {
   authRole?: UserRole | 'NONE';
   needsOwnerSetup?: boolean;
   isDefaultOwnerPin?: boolean;
+  hasOwnerRecoveryCode?: boolean;
   salon: Salon;
   settings: SalonSettings;
   staff: StaffMember[];
   receptionAccounts?: ReceptionAccount[];
+  offers?: SalonOffer[];
   services: ServiceItem[];
   customers: Customer[];
   timeSlots: TimeSlot[];

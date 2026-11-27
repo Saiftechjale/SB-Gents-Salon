@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS public.salon_settings (
 -- Safe idempotent columns if salon_settings already existed from an earlier run
 ALTER TABLE public.salon_settings ADD COLUMN IF NOT EXISTS upi_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE public.salon_settings ADD COLUMN IF NOT EXISTS upi_merchant_name TEXT NOT NULL DEFAULT 'SB Gents Salon';
+ALTER TABLE public.salon_settings ADD COLUMN IF NOT EXISTS hide_staff_login BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE public.salon_settings ADD COLUMN IF NOT EXISTS customer_apk_url TEXT NOT NULL DEFAULT '';
 
 -- 4. STAFF TABLE (Dynamic staff count + Owner barber entry)
 CREATE TABLE IF NOT EXISTS public.staff (
@@ -129,9 +131,18 @@ CREATE TABLE IF NOT EXISTS public.bookings (
   total_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
   notes TEXT DEFAULT '',
   is_billed BOOLEAN NOT NULL DEFAULT FALSE,
+  subtotal_amount NUMERIC(10,2),
+  discount_amount NUMERIC(10,2) DEFAULT 0,
+  applied_offer_id TEXT,
+  applied_offer_title TEXT DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS subtotal_amount NUMERIC(10,2);
+ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10,2) DEFAULT 0;
+ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS applied_offer_id TEXT;
+ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS applied_offer_title TEXT DEFAULT '';
 
 -- Prevent double-booking of the same barber on the same date & time slot (when not cancelled)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_barber_slot
@@ -165,9 +176,16 @@ CREATE TABLE IF NOT EXISTS public.payments (
   udhar_amount NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (udhar_amount >= 0),
   payment_type TEXT NOT NULL CHECK (payment_type IN ('BILL_PAYMENT', 'DUE_SETTLEMENT')) DEFAULT 'BILL_PAYMENT',
   client_sync_id TEXT UNIQUE, -- Idempotency key for offline PWA sync
+  gross_bill NUMERIC(10,2),
+  discount_amount NUMERIC(10,2) DEFAULT 0,
+  applied_offer_title TEXT DEFAULT '',
   notes TEXT DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS gross_bill NUMERIC(10,2);
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10,2) DEFAULT 0;
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS applied_offer_title TEXT DEFAULT '';
 
 -- 11. CUSTOMER_DUES TABLE (Customer-wise Udhar Ledger)
 CREATE TABLE IF NOT EXISTS public.customer_dues (
@@ -331,15 +349,19 @@ CREATE POLICY "Staff view own commissions" ON public.commissions FOR SELECT
     WHERE s.id = commissions.staff_id AND s.profile_id = auth.uid()
   ));
 
--- 17. SALON_AUTH_STATE TABLE (Salted PIN Hashes & Reception Counter Accounts)
+-- 17. SALON_AUTH_STATE TABLE (Salted PIN Hashes, Offers & Reception Counter Accounts)
 CREATE TABLE IF NOT EXISTS public.salon_auth_state (
   salon_id UUID PRIMARY KEY REFERENCES public.salons(id) ON DELETE CASCADE,
   reception_accounts JSONB NOT NULL DEFAULT '[]'::jsonb,
   security_pins JSONB NOT NULL DEFAULT '{}'::jsonb,
+  offers JSONB NOT NULL DEFAULT '[]'::jsonb,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.salon_auth_state ADD COLUMN IF NOT EXISTS offers JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 ALTER TABLE public.salon_auth_state ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Owner full access salon_auth_state" ON public.salon_auth_state FOR ALL
   USING (EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role = 'OWNER'));
+
 

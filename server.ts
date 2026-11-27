@@ -22,12 +22,21 @@ import type {
   CustomerServiceHistory,
   NotificationItem,
   ReceptionAccount,
+  SalonOffer,
+  OfferDiscountType,
+  OfferAccentTheme,
   AvailabilityStatus,
   BookingPreference,
   BookingType,
   BookingStatus,
   UserRole,
 } from './src/types/salon';
+import {
+  calculateOfferDiscount,
+  isValidPin as isPinFormatValid,
+  isWeakPin,
+  WEAK_PIN_MSG,
+} from './src/lib/pinSecurity';
 
 dotenv.config();
 
@@ -72,13 +81,28 @@ const supabaseAdmin: SupabaseClient | null = isSupabaseConfigured
     })
   : null;
 
+interface CustomerResetRecord {
+  codeHash: string;
+  expiresAt: number;
+  attempts: number;
+}
+
+interface LoginLockRecord {
+  count: number;
+  lockedUntil: number;
+  lockLevel?: number;
+}
+
 interface SecurityPinsStore {
   ownerClaimed: boolean;
   isDefaultOwnerPin?: boolean;
   ownerPinHash: string;
+  ownerRecoveryHash?: string;
   staffPinHashes: Record<string, string>;
   receptionPinHashes: Record<string, string>;
   customerPinHashes: Record<string, string>;
+  customerResetCodes?: Record<string, CustomerResetRecord>;
+  loginLocks?: Record<string, LoginLockRecord>;
   ownerPin?: string;
   staffPin?: string;
 }
@@ -88,6 +112,7 @@ interface DatabaseStore {
   settings: SalonSettings;
   staff: StaffMember[];
   receptionAccounts: ReceptionAccount[];
+  offers: SalonOffer[];
   services: ServiceItem[];
   customers: Customer[];
   timeSlots: TimeSlot[];
@@ -250,12 +275,14 @@ function createInitialDatabase(): DatabaseStore {
   }));
 
   const timeSlots = generateTimeSlotsList('09:00', '21:00', 30, salonId);
+  const offers = createDefaultOffers(salonId, now);
 
   return {
     salon,
     settings,
     staff: [ownerBarber, staff1, staff2],
     receptionAccounts: [],
+    offers,
     services,
     customers: [],
     timeSlots,
@@ -310,12 +337,58 @@ function createInitialDatabase(): DatabaseStore {
   };
 }
 
+function createDefaultOffers(salonId: string, now: string): SalonOffer[] {
+  return [
+    {
+      id: crypto.randomUUID(),
+      salon_id: salonId,
+      title: 'Online Slot Booking Special',
+      subtitle: 'App se slot book karne par turant 15% discount payein',
+      badge_text: '15% OFF',
+      discount_type: 'PERCENT',
+      discount_value: 15,
+      min_bill: 150,
+      promo_code: 'SALON15',
+      accent_theme: 'PURPLE',
+      is_active: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: crypto.randomUUID(),
+      salon_id: salonId,
+      title: 'Haircut + Beard Combo Offer',
+      subtitle: '₹200+ ke bill par seedhe ₹40 ki bachat karein',
+      badge_text: '₹40 OFF',
+      discount_type: 'FLAT',
+      discount_value: 40,
+      min_bill: 200,
+      promo_code: 'COMBO40',
+      accent_theme: 'GOLD',
+      is_active: true,
+      created_at: now,
+      updated_at: now,
+    },
+  ];
+}
+
+function generateMasterRecoveryCode(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const pick = (len: number) =>
+    Array.from(crypto.randomBytes(len), (b) => alphabet[b % alphabet.length]).join('');
+  return `SB-${pick(4)}-${pick(4)}`;
+}
+
+function generateSixDigitResetCode(): string {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
 function isValidIndianMobile(phone: string): boolean {
   return /^[6-9]\d{9}$/.test(phone);
 }
 
 function isValidPin(pin: string): boolean {
-  return /^\d{4,6}$/.test(pin);
+  return isPinFormatValid(pin);
 }
 
 function hashPin(pin: string): string {
@@ -367,6 +440,9 @@ if (!db.settings.upi_merchant_name) db.settings.upi_merchant_name = db.salon.nam
 if (db.settings.hide_staff_login === undefined) db.settings.hide_staff_login = false;
 if (db.settings.customer_apk_url === undefined) db.settings.customer_apk_url = '';
 if (!Array.isArray(db.receptionAccounts)) db.receptionAccounts = [];
+if (!Array.isArray(db.offers)) {
+  db.offers = createDefaultOffers(db.salon.id, new Date().toISOString());
+}
 // Clean up deprecated showcase/reviews properties if present on older DB file
 delete (db as unknown as Record<string, unknown>).showcase;
 delete (db as unknown as Record<string, unknown>).reviews;
@@ -379,11 +455,15 @@ if (!db.securityPins) {
     staffPinHashes: {},
     receptionPinHashes: {},
     customerPinHashes: {},
+    customerResetCodes: {},
+    loginLocks: {},
   };
 }
 if (!db.securityPins.staffPinHashes) db.securityPins.staffPinHashes = {};
 if (!db.securityPins.receptionPinHashes) db.securityPins.receptionPinHashes = {};
 if (!db.securityPins.customerPinHashes) db.securityPins.customerPinHashes = {};
+if (!db.securityPins.customerResetCodes) db.securityPins.customerResetCodes = {};
+if (!db.securityPins.loginLocks) db.securityPins.loginLocks = {};
 
 // Migrate legacy plaintext PINs into salted scrypt hashes cleanly without breaking existing shop owner
 if (db.securityPins.ownerPin) {
@@ -418,11 +498,34 @@ function saveDatabase(): void {
 }
 saveDatabase();
 
+const OPTIONAL_SCHEMA_COLUMNS = [
+  'subtotal_amount',
+  'discount_amount',
+  'applied_offer_id',
+  'applied_offer_title',
+  'gross_bill',
+  'hide_staff_login',
+  'customer_apk_url',
+];
+
+function stripOptionalColumns(row: Record<string, unknown>): Record<string, unknown> {
+  const clean = { ...row };
+  for (const col of OPTIONAL_SCHEMA_COLUMNS) {
+    delete clean[col];
+  }
+  return clean;
+}
+
 // Helper to replicate write operations to Supabase PostgreSQL when credentials are configured
 async function syncTableRowToSupabase(table: string, row: Record<string, unknown>, onConflict?: string) {
   if (!supabaseAdmin) return;
   try {
-    await supabaseAdmin.from(table).upsert(row, onConflict ? { onConflict } : undefined);
+    const { error } = await supabaseAdmin.from(table).upsert(row, onConflict ? { onConflict } : undefined);
+    if (error && /column|schema cache/i.test(error.message)) {
+      await supabaseAdmin
+        .from(table)
+        .upsert(stripOptionalColumns(row), onConflict ? { onConflict } : undefined);
+    }
   } catch {
     // Fallback to local relational store if Supabase table hasn't been migrated yet
   }
@@ -431,15 +534,27 @@ async function syncTableRowToSupabase(table: string, row: Record<string, unknown
 async function syncAuthStateToSupabase(): Promise<void> {
   if (!supabaseAdmin) return;
   try {
-    await supabaseAdmin.from('salon_auth_state').upsert(
+    const { error } = await supabaseAdmin.from('salon_auth_state').upsert(
       {
         salon_id: db.salon.id,
         reception_accounts: db.receptionAccounts,
         security_pins: db.securityPins,
+        offers: db.offers,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'salon_id' }
     );
+    if (error && /offers|column|schema cache/i.test(error.message)) {
+      await supabaseAdmin.from('salon_auth_state').upsert(
+        {
+          salon_id: db.salon.id,
+          reception_accounts: db.receptionAccounts,
+          security_pins: { ...db.securityPins, __offers: db.offers },
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'salon_id' }
+      );
+    }
   } catch {
     // Table optional if user has not yet re-run updated schema.sql
   }
@@ -557,31 +672,63 @@ function requireRoles(req: Request, res: Response, allowedRoles: UserRole[]): Po
   return session;
 }
 
-function recordFailedLoginAttempt(lockKey: string, now: number): void {
-  const current = failedPinAttempts.get(lockKey);
+function getLockMap(): Record<string, LoginLockRecord> {
+  if (!db.securityPins.loginLocks) db.securityPins.loginLocks = {};
+  return db.securityPins.loginLocks;
+}
+
+function recordFailedLoginAttempt(lockKey: string, now: number): number {
+  const locks = getLockMap();
+  const current = locks[lockKey];
   const prev = current && current.lockedUntil <= now ? current.count : 0;
+  const prevLevel = current?.lockLevel || 0;
   const nextCount = prev + 1;
-  failedPinAttempts.set(lockKey, {
-    count: nextCount >= 5 ? 0 : nextCount,
-    lockedUntil: nextCount >= 5 ? now + 5 * 60 * 1000 : 0,
-  });
+  if (nextCount >= 5) {
+    const nextLevel = Math.min(3, prevLevel + 1);
+    const lockMinutes = nextLevel === 1 ? 5 : nextLevel === 2 ? 15 : 30;
+    locks[lockKey] = {
+      count: 0,
+      lockedUntil: now + lockMinutes * 60 * 1000,
+      lockLevel: nextLevel,
+    };
+    saveDatabase();
+    void syncAuthStateToSupabase();
+    return 0;
+  }
+  locks[lockKey] = {
+    count: nextCount,
+    lockedUntil: 0,
+    lockLevel: prevLevel,
+  };
+  saveDatabase();
+  return 5 - nextCount;
+}
+
+function clearLoginLock(lockKey: string): void {
+  const locks = getLockMap();
+  if (locks[lockKey]) {
+    delete locks[lockKey];
+    saveDatabase();
+    void syncAuthStateToSupabase();
+  }
 }
 
 function checkLoginLock(lockKey: string, res: Response): boolean {
   const now = Date.now();
-  const attemptState = failedPinAttempts.get(lockKey);
+  const locks = getLockMap();
+  const attemptState = locks[lockKey];
   if (attemptState && attemptState.lockedUntil > now) {
     const waitMins = Math.max(1, Math.ceil((attemptState.lockedUntil - now) / 60000));
     res.status(429).json({
       verified: false,
-      error: `Bahut baar galat koshish hui. ${waitMins} minute baad dobara try karein.`,
+      locked: true,
+      waitMinutes: waitMins,
+      error: `Bahut baar galat koshish hui. Security ke liye ${waitMins} minute ke liye lock ho gaya hai.`,
     });
     return false;
   }
   return true;
 }
-
-const failedPinAttempts = new Map<string, { count: number; lockedUntil: number }>();
 
 interface OtpRecord {
   code: string;
@@ -729,15 +876,23 @@ async function hydrateOrSeedSupabaseOnStartup(): Promise<void> {
       if (!authRes.error && authRes.data && authRes.data[0]) {
         const row = authRes.data[0] as {
           reception_accounts?: ReceptionAccount[];
-          security_pins?: SecurityPinsStore;
+          security_pins?: SecurityPinsStore & { __offers?: SalonOffer[] };
+          offers?: SalonOffer[];
         };
         if (Array.isArray(row.reception_accounts)) {
           db.receptionAccounts = row.reception_accounts;
         }
+        if (Array.isArray(row.offers)) {
+          db.offers = row.offers;
+        } else if (Array.isArray(row.security_pins?.__offers)) {
+          db.offers = row.security_pins.__offers;
+        }
         if (row.security_pins && row.security_pins.ownerPinHash) {
+          const cleanPins = { ...row.security_pins };
+          delete cleanPins.__offers;
           db.securityPins = {
             ...db.securityPins,
-            ...row.security_pins,
+            ...cleanPins,
           };
           hydratedAuth = true;
         }
@@ -886,6 +1041,11 @@ async function startServer() {
       services: db.bookingServices.filter((bs) => bs.booking_id === b.id),
     }));
 
+    const visibleOffers =
+      session?.role === 'OWNER' || session?.role === 'RECEPTION'
+        ? db.offers
+        : db.offers.filter((o) => o.is_active);
+
     const basePayload = {
       supabaseConnected: isSupabaseConfigured,
       supabaseUrlConfigured: Boolean(SUPABASE_URL),
@@ -895,8 +1055,10 @@ async function startServer() {
       authRole,
       needsOwnerSetup: !db.securityPins.ownerClaimed,
       isDefaultOwnerPin: session?.role === 'OWNER' ? Boolean(db.securityPins.isDefaultOwnerPin) : false,
+      hasOwnerRecoveryCode: session?.role === 'OWNER' ? Boolean(db.securityPins.ownerRecoveryHash) : undefined,
       salon: db.salon,
       settings: db.settings,
+      offers: visibleOffers,
       services: db.services,
       timeSlots: db.timeSlots,
     };
@@ -1109,6 +1271,10 @@ async function startServer() {
       res.status(400).json({ error: 'Staff login ke liye 4 se 6 digit ka Secret PIN set karein.' });
       return;
     }
+    if (isWeakPin(cleanPin)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
+      return;
+    }
     const duplicate = db.staff.find((s) => s.is_active && normalizePhone10(s.phone) === cleanPhone);
     if (duplicate) {
       res.status(409).json({ error: `Yeh mobile number pehle se ${duplicate.name} ke liye registered hai.` });
@@ -1175,6 +1341,10 @@ async function startServer() {
       const cleanPin = String(pin).trim();
       if (!isValidPin(cleanPin)) {
         res.status(400).json({ error: 'Staff PIN 4 se 6 digits ka number hona chahiye.' });
+        return;
+      }
+      if (isWeakPin(cleanPin)) {
+        res.status(400).json({ error: WEAK_PIN_MSG });
         return;
       }
       db.securityPins.staffPinHashes[member.id] = hashPin(cleanPin);
@@ -1271,6 +1441,10 @@ async function startServer() {
       res.status(400).json({ error: 'Reception login ke liye 4 se 6 digit ka Secret PIN set karein.' });
       return;
     }
+    if (isWeakPin(cleanPin)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
+      return;
+    }
     const duplicate = db.receptionAccounts.find(
       (r) => normalizePhone10(r.phone) === cleanPhone
     );
@@ -1327,6 +1501,10 @@ async function startServer() {
       const cleanPin = String(pin).trim();
       if (!isValidPin(cleanPin)) {
         res.status(400).json({ error: 'Reception PIN 4 se 6 digits ka hona chahiye.' });
+        return;
+      }
+      if (isWeakPin(cleanPin)) {
+        res.status(400).json({ error: WEAK_PIN_MSG });
         return;
       }
       db.securityPins.receptionPinHashes[acc.id] = hashPin(cleanPin);
@@ -1506,8 +1684,8 @@ async function startServer() {
       res.status(400).json({ error: '4 se 6 digit ka Secret PIN daalein.' });
       return;
     }
-    if (['1234', '0000', '1111', '2222', '9999'].includes(pin)) {
-      res.status(400).json({ error: 'Safety ke liye aasan PIN (jaise 1234/0000) na rakhein, apna alag PIN chunein.' });
+    if (isWeakPin(pin)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
       return;
     }
 
@@ -1526,7 +1704,9 @@ async function startServer() {
       await syncTableRowToSupabase('staff', ownerStaff as unknown as Record<string, unknown>);
     }
 
+    const recoveryCode = generateMasterRecoveryCode();
     db.securityPins.ownerPinHash = hashPin(pin);
+    db.securityPins.ownerRecoveryHash = hashPin(recoveryCode);
     db.securityPins.ownerClaimed = true;
     db.securityPins.isDefaultOwnerPin = false;
 
@@ -1542,7 +1722,7 @@ async function startServer() {
       customerId: null,
       phone: cleanPhone,
     });
-    res.status(201).json({ verified: true, role: 'OWNER', token });
+    res.status(201).json({ verified: true, role: 'OWNER', token, recoveryCode });
   });
 
   // 4B. Strict Role-Separated Phone + PIN Login (OWNER, RECEPTION, STAFF)
@@ -1589,15 +1769,18 @@ async function startServer() {
       const phoneOk = ownerPhones.has(cleanPhone);
       const pinOk = verifyPinHash(pin, db.securityPins.ownerPinHash);
       if (!phoneOk || !pinOk) {
-        recordFailedLoginAttempt(lockKey, now);
+        const left = recordFailedLoginAttempt(lockKey, now);
         res.status(401).json({
           verified: false,
-          error: 'Malik ka registered mobile number ya PIN galat hai.',
+          error:
+            left > 0
+              ? `Malik ka registered mobile number ya PIN galat hai. (${left} koshish baaki)`
+              : 'Bahut baar galat koshish hui. Account kuch samay ke liye lock ho gaya hai.',
         });
         return;
       }
 
-      failedPinAttempts.delete(lockKey);
+      clearLoginLock(lockKey);
       const ownerStaff = db.staff.find((s) => s.is_active && s.is_owner);
       const token = signPortalToken({
         role: 'OWNER',
@@ -1618,15 +1801,18 @@ async function startServer() {
         ? db.securityPins.receptionPinHashes[matchedReception.id] || ''
         : '';
       if (!matchedReception || !verifyPinHash(pin, storedHash)) {
-        recordFailedLoginAttempt(lockKey, now);
+        const left = recordFailedLoginAttempt(lockKey, now);
         res.status(401).json({
           verified: false,
-          error: 'Receptionist ka mobile number ya PIN galat hai. Malik → Staff tab se account banwayein.',
+          error:
+            left > 0
+              ? `Receptionist ka mobile number ya PIN galat hai. (${left} koshish baaki)`
+              : 'Bahut baar galat koshish hui. Reception login kuch samay ke liye lock ho gaya hai.',
         });
         return;
       }
 
-      failedPinAttempts.delete(lockKey);
+      clearLoginLock(lockKey);
       const token = signPortalToken({
         role: 'RECEPTION',
         staffId: null,
@@ -1650,15 +1836,18 @@ async function startServer() {
     );
     const staffHash = matchedStaff ? db.securityPins.staffPinHashes[matchedStaff.id] || '' : '';
     if (!matchedStaff || !verifyPinHash(pin, staffHash)) {
-      recordFailedLoginAttempt(lockKey, now);
+      const left = recordFailedLoginAttempt(lockKey, now);
       res.status(401).json({
         verified: false,
-        error: 'Staff ka mobile number ya personal PIN galat hai.',
+        error:
+          left > 0
+            ? `Staff ka mobile number ya personal PIN galat hai. (${left} koshish baaki)`
+            : 'Bahut baar galat koshish hui. Staff login kuch samay ke liye lock ho gaya hai.',
       });
       return;
     }
 
-    failedPinAttempts.delete(lockKey);
+    clearLoginLock(lockKey);
     const token = signPortalToken({
       role: 'STAFF',
       staffId: matchedStaff.id,
@@ -1684,8 +1873,8 @@ async function startServer() {
       res.status(400).json({ error: 'Malik PIN 4 se 6 digits ka number hona chahiye.' });
       return;
     }
-    if (['1234', '0000', '1111', '2222', '9999'].includes(cleanOwner)) {
-      res.status(400).json({ error: 'Safety ke liye aasan PIN (jaise 1234/0000) na rakhein.' });
+    if (isWeakPin(cleanOwner)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
       return;
     }
 
@@ -1695,6 +1884,102 @@ async function startServer() {
     saveDatabase();
     await syncAuthStateToSupabase();
     res.json({ updated: true });
+  });
+
+  // Generate or rotate Malik Master Recovery Code (Owner only)
+  app.post('/api/auth/owner/recovery-code', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const recoveryCode = generateMasterRecoveryCode();
+    db.securityPins.ownerRecoveryHash = hashPin(recoveryCode);
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    res.json({ recoveryCode });
+  });
+
+  // Recover Malik Mobile + PIN using Master Recovery Code
+  app.post('/api/auth/owner/recover', async (req: Request, res: Response) => {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const lockKey = `${clientIp}:OWNER_RECOVER`;
+    const nowMs = Date.now();
+    if (!checkLoginLock(lockKey, res)) return;
+
+    const recoveryCode = String(req.body?.recoveryCode || '')
+      .trim()
+      .toUpperCase();
+    const newPhone = normalizePhone10(req.body?.phone);
+    const newPin = String(req.body?.newPin || '').trim();
+
+    if (!db.securityPins.ownerRecoveryHash) {
+      res.status(400).json({
+        error:
+          'Master Recovery Code abhi set nahi hai. Malik login ke baad Settings me jakar Recovery Code generate karein.',
+      });
+      return;
+    }
+    if (!recoveryCode || recoveryCode.length < 6) {
+      res.status(400).json({ error: 'Valid Master Recovery Code (e.g. SB-XXXX-YYYY) daalein.' });
+      return;
+    }
+    if (!isValidIndianMobile(newPhone)) {
+      res.status(400).json({ error: 'Apna naya ya registered 10-digit Indian mobile number daalein.' });
+      return;
+    }
+    if (!isValidPin(newPin)) {
+      res.status(400).json({ error: 'Naya PIN 4 se 6 digits ka number hona chahiye.' });
+      return;
+    }
+    if (isWeakPin(newPin)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
+      return;
+    }
+
+    if (!verifyPinHash(recoveryCode, db.securityPins.ownerRecoveryHash)) {
+      const left = recordFailedLoginAttempt(lockKey, nowMs);
+      res.status(401).json({
+        verified: false,
+        error:
+          left > 0
+            ? `Master Recovery Code galat hai. (${left} koshish baaki)`
+            : 'Bahut baar galat koshish hui. Recovery kuch samay ke liye lock ho gayi hai.',
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    db.salon.phone = newPhone;
+    db.salon.updated_at = now;
+    const ownerStaff = db.staff.find((s) => s.is_owner);
+    if (ownerStaff) {
+      ownerStaff.phone = newPhone;
+      ownerStaff.updated_at = now;
+      await syncTableRowToSupabase('staff', ownerStaff as unknown as Record<string, unknown>);
+    }
+
+    const nextRecoveryCode = generateMasterRecoveryCode();
+    db.securityPins.ownerPinHash = hashPin(newPin);
+    db.securityPins.ownerRecoveryHash = hashPin(nextRecoveryCode);
+    db.securityPins.isDefaultOwnerPin = false;
+    db.securityPins.ownerClaimed = true;
+    clearLoginLock(lockKey);
+    clearLoginLock(`${clientIp}:OWNER`);
+
+    saveDatabase();
+    await syncTableRowToSupabase('salons', db.salon as unknown as Record<string, unknown>);
+    await syncAuthStateToSupabase();
+
+    const token = signPortalToken({
+      role: 'OWNER',
+      staffId: ownerStaff?.id || null,
+      receptionId: null,
+      customerId: null,
+      phone: newPhone,
+    });
+    res.json({
+      verified: true,
+      role: 'OWNER',
+      token,
+      newRecoveryCode: nextRecoveryCode,
+    });
   });
 
   // 4C. Customer Self-Registration, Login & PIN Management
@@ -1719,6 +2004,10 @@ async function startServer() {
     }
     if (!isValidPin(cleanPin)) {
       res.status(400).json({ error: '4 se 6 digit ka Secret PIN banayein.' });
+      return;
+    }
+    if (isWeakPin(cleanPin)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
       return;
     }
 
@@ -1805,25 +2094,31 @@ async function startServer() {
 
     const customer = db.customers.find((c) => normalizePhone10(c.phone) === cleanPhone);
     if (!customer || !db.securityPins.customerPinHashes[customer.id]) {
-      recordFailedLoginAttempt(lockKey, now);
+      const left = recordFailedLoginAttempt(lockKey, now);
       res.status(401).json({
         verified: false,
         needsRegister: true,
-        error: 'Is number ka account abhi nahi bana hai. "Naya Account Banayein" chunein.',
+        error:
+          left > 0
+            ? 'Is number ka account abhi nahi bana hai. "Naya Account Banayein" chunein.'
+            : 'Bahut baar galat koshish hui. Kuch samay baad try karein.',
       });
       return;
     }
 
     if (!verifyPinHash(cleanPin, db.securityPins.customerPinHashes[customer.id])) {
-      recordFailedLoginAttempt(lockKey, now);
+      const left = recordFailedLoginAttempt(lockKey, now);
       res.status(401).json({
         verified: false,
-        error: 'Mobile number ya PIN galat hai.',
+        error:
+          left > 0
+            ? `Mobile number ya PIN galat hai. (${left} koshish baaki)`
+            : 'Bahut baar galat koshish hui. Security ke liye account lock ho gaya hai.',
       });
       return;
     }
 
-    failedPinAttempts.delete(lockKey);
+    clearLoginLock(lockKey);
     const token = signPortalToken({
       role: 'CUSTOMER',
       staffId: null,
@@ -1846,6 +2141,10 @@ async function startServer() {
     const newPin = String(req.body?.new_pin || '').trim();
     if (!isValidPin(currentPin) || !isValidPin(newPin)) {
       res.status(400).json({ error: 'Purana aur naya 4-6 digit PIN daalein.' });
+      return;
+    }
+    if (isWeakPin(newPin)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
       return;
     }
     const storedHash = db.securityPins.customerPinHashes[session.customerId] || '';
@@ -1871,11 +2170,237 @@ async function startServer() {
       res.status(400).json({ error: 'Naya PIN 4 se 6 digits ka hona chahiye.' });
       return;
     }
+    if (isWeakPin(newPin)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
+      return;
+    }
     db.securityPins.customerPinHashes[customer.id] = hashPin(newPin);
     saveDatabase();
     await syncAuthStateToSupabase();
     broadcastRealtimeUpdate('CUSTOMER_UPDATED');
     res.json({ updated: true });
+  });
+
+  // Malik generates a 1-time 6-digit PIN Reset Code (valid 15 min) for Customer Forgot PIN
+  app.post('/api/customers/:id/reset-code', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const customer = db.customers.find((c) => c.id === req.params.id);
+    if (!customer) {
+      res.status(404).json({ error: 'Customer not found.' });
+      return;
+    }
+    const resetCode = generateSixDigitResetCode();
+    if (!db.securityPins.customerResetCodes) db.securityPins.customerResetCodes = {};
+    db.securityPins.customerResetCodes[customer.id] = {
+      codeHash: hashPin(resetCode),
+      expiresAt: Date.now() + 15 * 60 * 1000,
+      attempts: 0,
+    };
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    res.json({
+      resetCode,
+      expiresInMinutes: 15,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+    });
+  });
+
+  // Customer resets forgotten PIN using 1-time 6-digit Reset Code from Salon Malik
+  app.post('/api/auth/customer/forgot-pin', async (req: Request, res: Response) => {
+    const cleanPhone = normalizePhone10(req.body?.phone);
+    const resetCode = String(req.body?.resetCode || '').trim();
+    const newPin = String(req.body?.newPin || '').trim();
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const lockKey = `${clientIp}:CUST_FORGOT:${cleanPhone}`;
+    const now = Date.now();
+
+    if (!checkLoginLock(lockKey, res)) return;
+
+    if (!isValidIndianMobile(cleanPhone)) {
+      res.status(400).json({ error: 'Apna registered 10-digit Indian mobile number daalein.' });
+      return;
+    }
+    if (!/^\d{6}$/.test(resetCode)) {
+      res.status(400).json({ error: 'Salon Malik se mila 6-digit Reset Code daalein.' });
+      return;
+    }
+    if (!isValidPin(newPin)) {
+      res.status(400).json({ error: 'Naya PIN 4 se 6 digits ka number hona chahiye.' });
+      return;
+    }
+    if (isWeakPin(newPin)) {
+      res.status(400).json({ error: WEAK_PIN_MSG });
+      return;
+    }
+
+    const customer = db.customers.find((c) => normalizePhone10(c.phone) === cleanPhone);
+    const resetMap = db.securityPins.customerResetCodes || {};
+    const record = customer ? resetMap[customer.id] : undefined;
+
+    if (!customer || !record) {
+      recordFailedLoginAttempt(lockKey, now);
+      res.status(400).json({
+        error: 'Reset Code nahi mila. Salon Malik se apna 6-digit PIN Reset Code banwayein.',
+      });
+      return;
+    }
+    if (now > record.expiresAt) {
+      delete resetMap[customer.id];
+      saveDatabase();
+      await syncAuthStateToSupabase();
+      res.status(400).json({ error: 'Yeh Reset Code expire ho gaya hai (15 min limit). Naya code lein.' });
+      return;
+    }
+    if (record.attempts >= 5) {
+      delete resetMap[customer.id];
+      saveDatabase();
+      await syncAuthStateToSupabase();
+      res.status(429).json({ error: 'Galat code attempts zyada ho gaye. Malik se naya code banwayein.' });
+      return;
+    }
+    if (!verifyPinHash(resetCode, record.codeHash)) {
+      record.attempts += 1;
+      recordFailedLoginAttempt(lockKey, now);
+      saveDatabase();
+      res.status(401).json({ error: 'Reset Code galat hai. Sahi 6-digit code daalein.' });
+      return;
+    }
+
+    db.securityPins.customerPinHashes[customer.id] = hashPin(newPin);
+    delete resetMap[customer.id];
+    clearLoginLock(lockKey);
+    clearLoginLock(`${clientIp}:CUSTOMER:${cleanPhone}`);
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('CUSTOMER_UPDATED');
+
+    const token = signPortalToken({
+      role: 'CUSTOMER',
+      staffId: null,
+      receptionId: null,
+      customerId: customer.id,
+      phone: cleanPhone,
+    });
+    res.json({
+      verified: true,
+      role: 'CUSTOMER',
+      customer: { ...customer, is_registered: true },
+      token,
+    });
+  });
+
+  // 4E. Customer Offers & Discount Slider CRUD (Owner only)
+  app.post('/api/offers', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const title = String(req.body?.title || '').trim();
+    const subtitle = String(req.body?.subtitle || '').trim();
+    const discountType: OfferDiscountType = req.body?.discount_type === 'FLAT' ? 'FLAT' : 'PERCENT';
+    const discountValue = Math.max(1, Number(req.body?.discount_value || 0));
+    const minBill = Math.max(0, Number(req.body?.min_bill || 0));
+    const promoCode = String(req.body?.promo_code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const rawTheme = String(req.body?.accent_theme || 'PURPLE').toUpperCase();
+    const accentTheme: OfferAccentTheme =
+      rawTheme === 'GOLD' || rawTheme === 'EMERALD' || rawTheme === 'ROSE' ? rawTheme : 'PURPLE';
+    const badgeText =
+      String(req.body?.badge_text || '').trim() ||
+      (discountType === 'PERCENT' ? `${Math.min(90, discountValue)}% OFF` : `₹${discountValue} OFF`);
+
+    if (title.length < 2) {
+      res.status(400).json({ error: 'Offer ka title daalein.' });
+      return;
+    }
+    if (discountType === 'PERCENT' && discountValue > 90) {
+      res.status(400).json({ error: 'Percentage discount maximum 90% ho sakta hai.' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const offer: SalonOffer = {
+      id: crypto.randomUUID(),
+      salon_id: db.salon.id,
+      title,
+      subtitle,
+      badge_text: badgeText,
+      discount_type: discountType,
+      discount_value: discountValue,
+      min_bill: minBill,
+      promo_code: promoCode,
+      accent_theme: accentTheme,
+      is_active: req.body?.is_active !== false,
+      created_at: now,
+      updated_at: now,
+    };
+    db.offers.unshift(offer);
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('OFFERS_UPDATED');
+    res.status(201).json({ offer });
+  });
+
+  app.put('/api/offers/:id', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const offer = db.offers.find((o) => o.id === req.params.id);
+    if (!offer) {
+      res.status(404).json({ error: 'Offer not found.' });
+      return;
+    }
+    const {
+      title,
+      subtitle,
+      badge_text,
+      discount_type,
+      discount_value,
+      min_bill,
+      promo_code,
+      accent_theme,
+      is_active,
+    } = req.body;
+    if (title !== undefined && String(title).trim()) offer.title = String(title).trim();
+    if (subtitle !== undefined) offer.subtitle = String(subtitle).trim();
+    if (discount_type !== undefined) offer.discount_type = discount_type === 'FLAT' ? 'FLAT' : 'PERCENT';
+    if (discount_value !== undefined) {
+      const v = Math.max(1, Number(discount_value || 0));
+      offer.discount_value = offer.discount_type === 'PERCENT' ? Math.min(90, v) : v;
+    }
+    if (min_bill !== undefined) offer.min_bill = Math.max(0, Number(min_bill || 0));
+    if (promo_code !== undefined) {
+      offer.promo_code = String(promo_code).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+    if (accent_theme !== undefined) {
+      const t = String(accent_theme).toUpperCase();
+      if (t === 'PURPLE' || t === 'GOLD' || t === 'EMERALD' || t === 'ROSE') {
+        offer.accent_theme = t;
+      }
+    }
+    if (badge_text !== undefined) {
+      offer.badge_text =
+        String(badge_text).trim() ||
+        (offer.discount_type === 'PERCENT'
+          ? `${offer.discount_value}% OFF`
+          : `₹${offer.discount_value} OFF`);
+    }
+    if (is_active !== undefined) offer.is_active = Boolean(is_active);
+    offer.updated_at = new Date().toISOString();
+
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('OFFERS_UPDATED');
+    res.json({ offer });
+  });
+
+  app.delete('/api/offers/:id', async (req: Request, res: Response) => {
+    if (!requireRoles(req, res, ['OWNER'])) return;
+    const idx = db.offers.findIndex((o) => o.id === req.params.id);
+    if (idx === -1) {
+      res.status(404).json({ error: 'Offer not found.' });
+      return;
+    }
+    db.offers.splice(idx, 1);
+    saveDatabase();
+    await syncAuthStateToSupabase();
+    broadcastRealtimeUpdate('OFFERS_UPDATED');
+    res.json({ deleted: true });
   });
 
   // 4D. Mobile OTP Request & Verification (Only dispatches via real SMS gateway; never returns secret codes in HTTP response)
@@ -2008,6 +2533,9 @@ async function startServer() {
         verification_token,
         website_honeypot,
         start_immediately,
+        offer_id,
+        promo_code,
+        manual_discount,
       } = req.body as {
         customer_name: string;
         customer_phone: string;
@@ -2024,6 +2552,9 @@ async function startServer() {
         verification_token?: string;
         website_honeypot?: string;
         start_immediately?: boolean;
+        offer_id?: string;
+        promo_code?: string;
+        manual_discount?: number;
       };
       const resolvedPreferredBarberId = preferred_barber_id || barber_id;
 
@@ -2241,7 +2772,41 @@ async function startServer() {
       const maxToken = existingOnDate.reduce((max, b) => Math.max(max, b.token_number), 0);
       const tokenNumber = maxToken + 1;
 
-      const totalAmount = selectedServices.reduce((sum, s) => sum + Number(s.price), 0);
+      const subtotalAmount = selectedServices.reduce((sum, s) => sum + Number(s.price), 0);
+      let discountAmount = 0;
+      let appliedOfferId: string | null = null;
+      let appliedOfferTitle = '';
+
+      const cleanPromo = String(promo_code || '').trim().toUpperCase();
+      const matchedOffer =
+        (offer_id ? db.offers.find((o) => o.id === offer_id && o.is_active) : undefined) ||
+        (cleanPromo
+          ? db.offers.find((o) => o.is_active && o.promo_code.toUpperCase() === cleanPromo)
+          : undefined);
+
+      if (matchedOffer) {
+        if (subtotalAmount < Math.max(0, Number(matchedOffer.min_bill || 0))) {
+          res.status(400).json({
+            error: `Yeh offer lagane ke liye kam se kam ₹${matchedOffer.min_bill} ki service chunein.`,
+          });
+          return;
+        }
+        discountAmount = calculateOfferDiscount(subtotalAmount, matchedOffer);
+        appliedOfferId = matchedOffer.id;
+        appliedOfferTitle = `${matchedOffer.title} (${matchedOffer.badge_text})`;
+      } else if (cleanPromo) {
+        res.status(400).json({ error: `Promo code "${cleanPromo}" valid ya active nahi hai.` });
+        return;
+      } else if (
+        session.role !== 'CUSTOMER' &&
+        manual_discount !== undefined &&
+        Number(manual_discount) > 0
+      ) {
+        discountAmount = Math.min(subtotalAmount, Math.round(Number(manual_discount)));
+        appliedOfferTitle = 'Counter Discount';
+      }
+
+      const totalAmount = Math.max(0, subtotalAmount - discountAmount);
       const bookingId = crypto.randomUUID();
       const referenceCode = `SB-${booking_date.slice(5).replace('-', '')}-${String(tokenNumber).padStart(3, '0')}`;
 
@@ -2264,6 +2829,10 @@ async function startServer() {
         slot_time,
         token_number: tokenNumber,
         status: session.role !== 'CUSTOMER' && start_immediately ? 'IN_PROGRESS' : 'WAITING',
+        subtotal_amount: subtotalAmount,
+        discount_amount: discountAmount,
+        applied_offer_id: appliedOfferId,
+        applied_offer_title: appliedOfferTitle,
         total_amount: totalAmount,
         notes: notes ? String(notes).trim() : '',
         is_billed: false,
@@ -2539,6 +3108,9 @@ async function startServer() {
       barber_id,
       service_ids,
       payment_date,
+      gross_bill,
+      discount_amount,
+      applied_offer_title,
       total_bill,
       cash_paid,
       upi_paid,
@@ -2555,7 +3127,28 @@ async function startServer() {
       }
     }
 
-    const billAmount = Math.max(0, Number(total_bill || 0));
+    let booking = booking_id ? db.bookings.find((b) => b.id === booking_id) : undefined;
+    const rawGrossBill =
+      gross_bill !== undefined
+        ? Math.max(0, Number(gross_bill))
+        : booking?.subtotal_amount !== undefined
+        ? Math.max(0, Number(booking.subtotal_amount))
+        : Math.max(0, Number(total_bill || 0) + Math.max(0, Number(discount_amount || 0)));
+
+    const computedDiscount =
+      discount_amount !== undefined
+        ? Math.min(rawGrossBill, Math.max(0, Math.round(Number(discount_amount || 0))))
+        : Math.min(rawGrossBill, Math.max(0, Number(booking?.discount_amount || 0)));
+
+    const billAmount =
+      gross_bill !== undefined
+        ? Math.max(0, rawGrossBill - computedDiscount)
+        : Math.max(0, Number(total_bill || 0));
+
+    const effectiveOfferTitle = String(
+      applied_offer_title || booking?.applied_offer_title || (computedDiscount > 0 ? 'Salon Discount' : '')
+    ).trim();
+
     const cashAmount = Math.max(0, Number(cash_paid || 0));
     const upiAmount = Math.max(0, Number(upi_paid || 0));
     const totalCollected = cashAmount + upiAmount;
@@ -2599,12 +3192,14 @@ async function startServer() {
     const barber = db.staff.find((s) => s.id === barber_id) || db.staff.find((s) => s.is_owner) || db.staff[0];
 
     // Resolve or create booking if this is a direct walk-in bill or offline synced bill
-    let booking = booking_id ? db.bookings.find((b) => b.id === booking_id) : undefined;
     let servicesSummary = '';
 
     if (booking) {
       booking.status = 'COMPLETED';
       booking.is_billed = true;
+      booking.subtotal_amount = rawGrossBill;
+      booking.discount_amount = computedDiscount;
+      booking.applied_offer_title = effectiveOfferTitle;
       booking.total_amount = billAmount;
       booking.updated_at = now;
       const bServices = db.bookingServices.filter((bs) => bs.booking_id === booking!.id);
@@ -2631,6 +3226,9 @@ async function startServer() {
         slot_time: new Date().toTimeString().slice(0, 5),
         token_number: tokenNumber,
         status: 'COMPLETED',
+        subtotal_amount: rawGrossBill,
+        discount_amount: computedDiscount,
+        applied_offer_title: effectiveOfferTitle,
         total_amount: billAmount,
         notes: notes || '',
         is_billed: true,
@@ -2661,6 +3259,9 @@ async function startServer() {
       barber_id: barber.id,
       barber_name: barber.name,
       payment_date: dateStr,
+      gross_bill: rawGrossBill,
+      discount_amount: computedDiscount,
+      applied_offer_title: effectiveOfferTitle,
       total_bill: billAmount,
       cash_paid: cashAmount,
       upi_paid: upiAmount,

@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Play,
   Receipt,
+  Tag,
   TrendingUp,
   UserCheck,
   UserPlus,
@@ -170,6 +171,10 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
   );
 
   const [payMode, setPayMode] = useState<'CASH' | 'UPI' | 'SPLIT'>('UPI');
+  const [counterDiscountMode, setCounterDiscountMode] = useState<
+    'BOOKING' | 'NONE' | 'FLAT20' | 'FLAT50' | 'PCT10' | 'CUSTOM'
+  >('BOOKING');
+  const [customDiscountAmt, setCustomDiscountAmt] = useState<string>('');
   const [splitCash, setSplitCash] = useState<string>('0');
   const [splitUpi, setSplitUpi] = useState<string>('0');
   const [splitUdhar, setSplitUdhar] = useState<string>('0');
@@ -182,7 +187,56 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
     label: string;
   } | null>(null);
 
-  const billTotal = selectedBillBooking ? Number(selectedBillBooking.total_amount) : 0;
+  useEffect(() => {
+    setCounterDiscountMode('BOOKING');
+    setCustomDiscountAmt('');
+  }, [selectedBillBooking?.id]);
+
+  const bookingGross = selectedBillBooking
+    ? Number(selectedBillBooking.subtotal_amount ?? selectedBillBooking.total_amount ?? 0)
+    : 0;
+  const bookingOfferDiscount = selectedBillBooking
+    ? Math.max(0, Number(selectedBillBooking.discount_amount || 0))
+    : 0;
+
+  const { effectiveDiscount, appliedOfferTitle, billTotal } = useMemo(() => {
+    if (!selectedBillBooking) {
+      return { effectiveDiscount: 0, appliedOfferTitle: '', billTotal: 0 };
+    }
+    let disc = 0;
+    let label = '';
+    if (counterDiscountMode === 'BOOKING') {
+      disc = bookingOfferDiscount;
+      label = selectedBillBooking.applied_offer_title || (disc > 0 ? 'Booking Offer' : '');
+    } else if (counterDiscountMode === 'NONE') {
+      disc = 0;
+      label = '';
+    } else if (counterDiscountMode === 'FLAT20') {
+      disc = 20;
+      label = 'Counter ₹20 Off';
+    } else if (counterDiscountMode === 'FLAT50') {
+      disc = 50;
+      label = 'Counter ₹50 Off';
+    } else if (counterDiscountMode === 'PCT10') {
+      disc = Math.round(bookingGross * 0.1);
+      label = 'Counter 10% Off';
+    } else if (counterDiscountMode === 'CUSTOM') {
+      disc = Math.max(0, Math.round(Number(customDiscountAmt || 0)));
+      label = 'Counter Discount';
+    }
+    const clampedDisc = Math.max(0, Math.min(bookingGross, disc));
+    return {
+      effectiveDiscount: clampedDisc,
+      appliedOfferTitle: clampedDisc > 0 ? label : '',
+      billTotal: Math.max(0, bookingGross - clampedDisc),
+    };
+  }, [
+    selectedBillBooking,
+    counterDiscountMode,
+    bookingOfferDiscount,
+    bookingGross,
+    customDiscountAmt,
+  ]);
 
   useEffect(() => {
     if (payMode === 'CASH') {
@@ -356,12 +410,15 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
       service_ids: serviceIds,
       services_summary: servicesSummary,
       payment_date: todayStr,
+      gross_bill: bookingGross,
+      discount_amount: effectiveDiscount,
+      applied_offer_title: appliedOfferTitle || undefined,
       total_bill: billTotal,
       cash_paid: cash,
       upi_paid: upi,
       udhar_amount: udhar,
       haircut_preference: '',
-      notes: '',
+      notes: appliedOfferTitle ? `Discount: ${appliedOfferTitle} (-₹${effectiveDiscount})` : '',
       created_at: new Date().toISOString(),
       sync_status: 'PENDING',
     };
@@ -851,11 +908,11 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                   </span>
                 </div>
 
-                {/* Itemized Receipt Card */}
+                {/* Itemized Receipt Card + Counter Discount */}
                 <div className="sb-card p-4 space-y-2.5">
                   {(selectedBillBooking.services && selectedBillBooking.services.length > 0
                     ? selectedBillBooking.services
-                    : [{ id: '1', service_name: 'Salon Service', price: billTotal }]
+                    : [{ id: '1', service_name: 'Salon Service', price: bookingGross }]
                   ).map((srv) => (
                     <div key={srv.id} className="flex items-center justify-between text-sm">
                       <span className="font-semibold text-[#141028] dark:text-slate-200">
@@ -866,6 +923,70 @@ export const ReceptionPortalView: React.FC<ReceptionPortalViewProps> = ({
                       </span>
                     </div>
                   ))}
+
+                  {/* Counter Discount Quick Selector */}
+                  <div className="border-t border-slate-100 dark:border-slate-800 pt-2.5 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-extrabold tracking-wider text-slate-500 uppercase flex items-center gap-1">
+                        <Tag className="w-3 h-3 text-[#6C3BF5]" />
+                        <span>COUNTER DISCOUNT</span>
+                      </span>
+                      {effectiveDiscount > 0 && (
+                        <span className="text-xs font-extrabold text-emerald-600 tabular-nums">
+                          −₹{effectiveDiscount} ({appliedOfferTitle})
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(
+                        [
+                          ...(bookingOfferDiscount > 0
+                            ? [{ id: 'BOOKING', label: `Offer (-₹${bookingOfferDiscount})` }]
+                            : []),
+                          { id: 'NONE', label: 'No Discount' },
+                          { id: 'FLAT20', label: '-₹20' },
+                          { id: 'FLAT50', label: '-₹50' },
+                          { id: 'PCT10', label: '-10%' },
+                          { id: 'CUSTOM', label: 'Custom ₹' },
+                        ] as {
+                          id: 'BOOKING' | 'NONE' | 'FLAT20' | 'FLAT50' | 'PCT10' | 'CUSTOM';
+                          label: string;
+                        }[]
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setCounterDiscountMode(opt.id)}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors min-h-[34px] ${
+                            counterDiscountMode === opt.id
+                              ? 'bg-[#6C3BF5] text-white'
+                              : 'bg-[#F8F7FC] dark:bg-slate-950 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    {counterDiscountMode === 'CUSTOM' && (
+                      <input
+                        type="number"
+                        min={0}
+                        max={bookingGross}
+                        value={customDiscountAmt}
+                        onChange={(e) => setCustomDiscountAmt(e.target.value)}
+                        placeholder={`Custom discount ₹ (max ₹${bookingGross})`}
+                        className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold tabular-nums"
+                      />
+                    )}
+                  </div>
+
+                  {effectiveDiscount > 0 && (
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
+                      <span>Subtotal</span>
+                      <span className="tabular-nums">₹{bookingGross}</span>
+                    </div>
+                  )}
+
                   <div className="border-t border-dashed border-slate-200 dark:border-slate-700 pt-2.5 flex items-center justify-between">
                     <span className="text-base font-extrabold text-[#141028] dark:text-white">
                       Total

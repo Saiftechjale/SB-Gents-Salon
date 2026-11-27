@@ -5,6 +5,8 @@ import {
   Bell,
   Calendar,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Home,
   KeyRound,
@@ -17,13 +19,16 @@ import {
   QrCode,
   Receipt,
   Search,
+  Sparkles,
   Sun,
+  Tag,
   User,
   Users,
 } from 'lucide-react';
 import type {
   Booking,
   BookingPreference,
+  OfferAccentTheme,
   SalonBootstrapData,
 } from '../types/salon';
 import { Language } from '../lib/i18n';
@@ -36,7 +41,9 @@ import {
   buildWhatsAppUrl,
   cleanPhone10,
 } from '../lib/messagingTemplates';
+import { calculateOfferDiscount, isWeakPin, WEAK_PIN_MSG } from '../lib/pinSecurity';
 import { buildUpiDeepLinks } from '../lib/upiIntent';
+import { PWAInstallButton } from './PWAInstallButton';
 import {
   cleanDisplayName,
   formatServiceCombo,
@@ -50,6 +57,13 @@ import {
   isSlotInPastForDate,
   normalizeTimesInText12h,
 } from '../lib/salonUiHelpers';
+
+const OFFER_THEME_CLASSES: Record<OfferAccentTheme, string> = {
+  PURPLE: 'from-[#6C3BF5] via-[#8B5CF6] to-[#EC4899]',
+  GOLD: 'from-amber-500 via-orange-500 to-rose-500',
+  EMERALD: 'from-emerald-600 via-teal-600 to-cyan-600',
+  ROSE: 'from-rose-600 via-pink-600 to-fuchsia-600',
+};
 
 export type CustomerTab = 'HOME' | 'BOOKING' | 'QUEUE' | 'BILLING' | 'PROFILE';
 
@@ -118,6 +132,16 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
     [data.staff]
   );
 
+  // Offers & Discounts Slider state
+  const activeOffers = useMemo(
+    () => (data.offers || []).filter((o) => o.is_active),
+    [data.offers]
+  );
+  const [offerSlideIdx, setOfferSlideIdx] = useState<number>(0);
+  const [sliderPaused, setSliderPaused] = useState<boolean>(false);
+  const [selectedOfferId, setSelectedOfferId] = useState<string>('');
+  const [promoInput, setPromoInput] = useState<string>('');
+
   // Booking State (Screen 1)
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>(() => {
     const first = activeServices[0];
@@ -149,6 +173,17 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
     const id = setInterval(() => setNowTick(Date.now()), 30000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (activeOffers.length <= 1 || sliderPaused) return;
+    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return;
+    }
+    const timer = setInterval(() => {
+      setOfferSlideIdx((prev) => (prev + 1) % activeOffers.length);
+    }, 4500);
+    return () => clearInterval(timer);
+  }, [activeOffers.length, sliderPaused]);
 
   // Proximity alert tracker refs
   const proximityAlertSentRef = useRef<Set<string>>(new Set());
@@ -268,6 +303,35 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
     () => selectedServices.reduce((sum, s) => sum + Number(s.price), 0),
     [selectedServices]
   );
+
+  const appliedOffer = useMemo(() => {
+    if (selectedOfferId) {
+      return activeOffers.find((o) => o.id === selectedOfferId) || null;
+    }
+    const cleanCode = promoInput.trim().toUpperCase();
+    if (cleanCode) {
+      return (
+        activeOffers.find((o) => (o.promo_code || '').trim().toUpperCase() === cleanCode) ||
+        null
+      );
+    }
+    return null;
+  }, [activeOffers, selectedOfferId, promoInput]);
+
+  const bookingDiscount = useMemo(
+    () => calculateOfferDiscount(totalBill, appliedOffer),
+    [totalBill, appliedOffer]
+  );
+
+  const finalBookingTotal = useMemo(
+    () => Math.max(0, totalBill - bookingDiscount),
+    [totalBill, bookingDiscount]
+  );
+
+  const minBillMissing =
+    appliedOffer && Number(appliedOffer.min_bill || 0) > totalBill
+      ? Number(appliedOffer.min_bill) - totalBill
+      : 0;
 
   const selectedBarberObj = useMemo(
     () => activeBarbers.find((b) => b.id === selectedBarberId) || null,
@@ -529,6 +593,11 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
           booking_date: useDate,
           slot_time: useSlot,
           service_ids: useServices,
+          offer_id: bookingDiscount > 0 ? appliedOffer?.id : undefined,
+          promo_code:
+            bookingDiscount > 0 && promoInput.trim()
+              ? promoInput.trim().toUpperCase()
+              : undefined,
         }),
       });
       const json = await res.json();
@@ -542,6 +611,8 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       const created = json.booking as Booking;
       setLastBookedId(created.id);
       localStorage.setItem('sb_last_booking_id', created.id);
+      setSelectedOfferId('');
+      setPromoInput('');
       await onRefresh();
       playAlertChime('customer', { repeatCount: 2, vibrate: true });
       notify('success', `बुकिंग पक्की! आपका टोकन #${created.token_number} है`);
@@ -557,6 +628,10 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
     e.preventDefault();
     if (!/^\d{4,6}$/.test(curPin.trim()) || !/^\d{4,6}$/.test(newCustPin.trim())) {
       notify('error', 'Purana aur naya 4 se 6 digit ka PIN daalein');
+      return;
+    }
+    if (isWeakPin(newCustPin.trim())) {
+      notify('error', WEAK_PIN_MSG);
       return;
     }
     setChangingPin(true);
@@ -614,6 +689,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
               },
             ];
       const barberIdx = activeBarbers.findIndex((b) => b.id === myTrackedBooking.barber_id);
+      const itemSum = items.reduce((s, i) => s + Number(i.price || 0), 0);
+      const subtotal = Number(myTrackedBooking.subtotal_amount ?? itemSum);
+      const discountAmount = Math.max(0, Number(myTrackedBooking.discount_amount || 0));
       return {
         customerLabel: myTrackedBooking.customer_name,
         stylistName: cleanDisplayName(myTrackedBooking.barber_name),
@@ -627,6 +705,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
         tokenNumber: myTrackedBooking.token_number,
         referenceCode: myTrackedBooking.reference_code,
         items,
+        subtotal,
+        discountAmount,
+        appliedOfferTitle: myTrackedBooking.applied_offer_title || '',
         total: Number(myTrackedBooking.total_amount),
       };
     }
@@ -646,7 +727,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
     const barberIdx = selectedBarberObj
       ? activeBarbers.findIndex((b) => b.id === selectedBarberObj.id)
       : 0;
-    const total = items.reduce((sum, i) => sum + i.price, 0);
+    const subtotal = items.reduce((sum, i) => sum + i.price, 0);
+    const previewDiscount =
+      selectedServices.length > 0 ? calculateOfferDiscount(subtotal, appliedOffer) : 0;
     return {
       customerLabel: customerName.trim() || matchedCustomer?.name || 'Customer',
       stylistName: cleanDisplayName(selectedBarberObj?.name || featuredStylist?.name) || 'Stylist',
@@ -655,7 +738,10 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
       tokenNumber: null as number | null,
       referenceCode: undefined as string | undefined,
       items,
-      total,
+      subtotal,
+      discountAmount: previewDiscount,
+      appliedOfferTitle: previewDiscount > 0 ? appliedOffer?.title || 'Offer' : '',
+      total: Math.max(0, subtotal - previewDiscount),
     };
   }, [
     myTrackedBooking,
@@ -667,6 +753,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
     customerName,
     matchedCustomer,
     lang,
+    appliedOffer,
   ]);
 
   const billingUpiLinks = useMemo(() => {
@@ -856,6 +943,115 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 </div>
               )}
 
+              {/* 2.5 Special Offers & Discounts Slider (Editable by Malik) */}
+              {activeOffers.length > 0 && (() => {
+                const safeIdx = offerSlideIdx % activeOffers.length;
+                const offer = activeOffers[safeIdx];
+                const gradient = OFFER_THEME_CLASSES[offer.accent_theme] || OFFER_THEME_CLASSES.PURPLE;
+                return (
+                  <div
+                    className="space-y-2"
+                    onMouseEnter={() => setSliderPaused(true)}
+                    onMouseLeave={() => setSliderPaused(false)}
+                    onTouchStart={() => setSliderPaused(true)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-xs font-extrabold tracking-wider text-slate-500 uppercase flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-[#6C3BF5]" />
+                        <span>SPECIAL OFFERS &amp; DISCOUNTS</span>
+                      </h2>
+                      {activeOffers.length > 1 && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOfferSlideIdx(
+                                (safeIdx - 1 + activeOffers.length) % activeOffers.length
+                              )
+                            }
+                            aria-label="Previous offer"
+                            className="w-9 h-9 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOfferSlideIdx((safeIdx + 1) % activeOffers.length)
+                            }
+                            aria-label="Next offer"
+                            className="w-9 h-9 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div
+                      className={`rounded-3xl bg-gradient-to-br ${gradient} p-4 sm:p-5 text-white shadow-lg space-y-3 transition-all`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-extrabold uppercase tracking-wider bg-black/20 px-2.5 py-1 rounded-lg">
+                          <Tag className="w-3 h-3" />
+                          <span>{offer.badge_text}</span>
+                        </span>
+                        {offer.promo_code && (
+                          <span className="text-[11px] font-extrabold tracking-wider uppercase bg-white/20 px-2.5 py-1 rounded-lg tabular-nums">
+                            CODE: {offer.promo_code}
+                          </span>
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-lg sm:text-xl font-extrabold leading-snug">
+                          {offer.title}
+                        </div>
+                        {offer.subtitle && (
+                          <p className="text-xs text-white/90 mt-0.5">{offer.subtitle}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between gap-2 pt-0.5">
+                        <span className="text-[11px] font-bold text-white/85 tabular-nums">
+                          {Number(offer.min_bill || 0) > 0
+                            ? `Min Bill ₹${offer.min_bill}`
+                            : 'Sabhi bookings par valid'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedOfferId(offer.id);
+                            if (offer.promo_code) setPromoInput(offer.promo_code);
+                            setActiveTab('BOOKING');
+                          }}
+                          className="px-4 py-2.5 rounded-xl bg-white text-[#141028] text-xs font-extrabold flex items-center gap-1.5 min-h-[44px] whitespace-nowrap shadow-sm"
+                        >
+                          <span>Offer Lagayein</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {activeOffers.length > 1 && (
+                      <div className="flex items-center justify-center gap-1.5">
+                        {activeOffers.map((o, idx) => (
+                          <button
+                            key={o.id}
+                            type="button"
+                            onClick={() => setOfferSlideIdx(idx)}
+                            aria-label={`Offer ${idx + 1}`}
+                            className={`h-2 rounded-full transition-all ${
+                              idx === safeIdx
+                                ? 'w-6 bg-[#6C3BF5]'
+                                : 'w-2 bg-slate-300 dark:bg-slate-700'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* 3. Services & Rate Card (Tap to book immediately) */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -985,6 +1181,9 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   </a>
                 </div>
               </div>
+
+              {/* 6. Direct Web App Install / Save to Home Screen */}
+              <PWAInstallButton salonName={data.salon.name} />
             </div>
           );
         })()}
@@ -1220,8 +1419,96 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   </div>
                 </div>
 
+                {/* Offers & Promo Discount Selector */}
+                {activeOffers.length > 0 && (
+                  <div className="sb-card p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-extrabold tracking-wider text-slate-500 uppercase flex items-center gap-1">
+                        <Tag className="w-3 h-3 text-[#6C3BF5]" />
+                        <span>DISCOUNT / PROMO CODE</span>
+                      </span>
+                      {appliedOffer && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedOfferId('');
+                            setPromoInput('');
+                          }}
+                          className="text-[11px] font-bold text-rose-500"
+                        >
+                          Hatayein
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      {activeOffers.map((off) => {
+                        const active = appliedOffer?.id === off.id;
+                        return (
+                          <button
+                            key={off.id}
+                            type="button"
+                            onClick={() => {
+                              if (active) {
+                                setSelectedOfferId('');
+                                setPromoInput('');
+                              } else {
+                                setSelectedOfferId(off.id);
+                                setPromoInput(off.promo_code || '');
+                              }
+                            }}
+                            className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold shrink-0 whitespace-nowrap border transition-colors min-h-[36px] ${
+                              active
+                                ? 'bg-[#6C3BF5] text-white border-[#6C3BF5]'
+                                : 'bg-[#F8F7FC] dark:bg-slate-950 text-[#141028] dark:text-slate-200 border-slate-200 dark:border-slate-800'
+                            }`}
+                          >
+                            {off.badge_text}
+                            {Number(off.min_bill || 0) > 0 ? ` (₹${off.min_bill}+)` : ''}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={promoInput}
+                        onChange={(e) => {
+                          setSelectedOfferId('');
+                          setPromoInput(e.target.value.toUpperCase());
+                        }}
+                        placeholder="Promo Code daalein (e.g. WELCOME20)"
+                        className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-[#F8F7FC] dark:bg-slate-950 px-3 py-2 text-xs font-bold uppercase focus:outline-none focus:border-[#6C3BF5]"
+                      />
+                      {promoInput.trim() && !appliedOffer && (
+                        <span className="self-center text-[11px] font-bold text-rose-500 whitespace-nowrap pr-1">
+                          Invalid code
+                        </span>
+                      )}
+                    </div>
+
+                    {minBillMissing > 0 && (
+                      <div className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                        Is offer ke liye ₹{minBillMissing} ki aur service jodein (Min ₹
+                        {appliedOffer?.min_bill})
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Summary Bar + Gradient CTA */}
                 <div className="space-y-2.5 pt-0.5">
+                  {bookingDiscount > 0 && (
+                    <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 px-3 py-1.5 flex items-center justify-between text-xs font-bold text-emerald-700 dark:text-emerald-300 tabular-nums">
+                      <span className="truncate pr-2">
+                        Offer Savings ({appliedOffer?.badge_text || 'Discount'})
+                      </span>
+                      <span>
+                        ₹{totalBill} − ₹{bookingDiscount} = ₹{finalBookingTotal}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between text-xs sm:text-sm font-bold text-slate-600 dark:text-slate-300 px-0.5">
                     <span className="truncate pr-3">
                       {selectedServices.length > 0
@@ -1234,7 +1521,7 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                       · {selectedSlot ? formatSlot12h(selectedSlot) : '--'}
                     </span>
                     <span className="text-lg font-extrabold text-[#141028] dark:text-white tabular-nums shrink-0">
-                      ₹{totalBill}
+                      ₹{finalBookingTotal}
                     </span>
                   </div>
 
@@ -1323,13 +1610,16 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                     : 'Apna slot book karein'}
                 </div>
                 {myTrackedBooking && (
-                  <div className="text-[11px] font-medium text-white/75 truncate">
+                  <div className="text-[11px] font-medium text-white/80 truncate">
                     {myTrackedBooking.booking_date === todayStr
                       ? 'Aaj'
                       : formatShortDate(myTrackedBooking.booking_date)}{' '}
                     ·{' '}
                     {myTrackedBooking.services?.map((s) => s.service_name).join(' + ') ||
                       'Salon Service'}
+                    {Number(myTrackedBooking.discount_amount || 0) > 0
+                      ? ` · ₹${myTrackedBooking.discount_amount} Offer Bachat`
+                      : ''}
                   </div>
                 )}
               </div>
@@ -1651,6 +1941,22 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   </span>
                 </div>
               ))}
+              {billingPreview.discountAmount > 0 && (
+                <>
+                  <div className="border-t border-slate-100 dark:border-slate-800 pt-2 flex items-center justify-between text-xs text-slate-500">
+                    <span>Subtotal</span>
+                    <span className="font-bold tabular-nums">₹{billingPreview.subtotal}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                    <span className="truncate pr-2">
+                      Discount ({billingPreview.appliedOfferTitle || 'Offer'})
+                    </span>
+                    <span className="tabular-nums shrink-0">
+                      −₹{billingPreview.discountAmount}
+                    </span>
+                  </div>
+                </>
+              )}
               <div className="border-t border-dashed border-slate-200 dark:border-slate-700 pt-2 flex items-center justify-between">
                 <span className="text-sm font-extrabold text-[#141028] dark:text-white">
                   Total
@@ -1927,6 +2233,8 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                   <span>{darkMode ? 'Light Mode' : 'Dark Mode'}</span>
                 </button>
               </div>
+
+              <PWAInstallButton salonName={data.salon.name} compact />
 
               {onLogout && (
                 <button

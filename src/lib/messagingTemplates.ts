@@ -120,3 +120,15 @@ export function buildCustomerUdharOrGreetingText(opts: {
   }
   return `Namaste ${opts.customerName} ji! ${opts.salonName} me aapka swagat hai. Naya haircut ya beard slot book karne ke liye app kholein ya humein call karein.`;
 }
+
+export function buildCustomerPinResetCodeText(opts: {
+  salonName: string;
+  customerName: string;
+  resetCode: string;
+}): string {
+  return (
+    `Namaste ${opts.customerName} ji,\n` +
+    `${opts.salonName} app par naya PIN banane ke liye aapka 1-time Reset Code hai: ${opts.resetCode}\n` +
+    `(Yeh code 15 minute ke liye valid hai. Login screen par "PIN Bhool Gaye?" me daalein.)`
+  );
+}

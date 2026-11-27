@@ -64,6 +64,8 @@ export async function updateOfflineDraftStatus(
   }
 }
 
+const FALLBACK_STATE_KEY = 'sb_salon_cached_state_fallback';
+
 export async function cacheSalonStateLocally(data: SalonBootstrapData): Promise<void> {
   try {
     const db = await getDB();
@@ -73,7 +75,13 @@ export async function cacheSalonStateLocally(data: SalonBootstrapData): Promise<
       data,
     });
   } catch {
-    // Ignore IndexedDB quota errors in restricted frames
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(FALLBACK_STATE_KEY, JSON.stringify(data));
+      }
+    } catch {
+      // Ignore quota errors in restricted frames
+    }
   }
 }
 
@@ -81,8 +89,17 @@ export async function getCachedSalonState(): Promise<SalonBootstrapData | null> 
   try {
     const db = await getDB();
     const record = await db.get('cached_state', 'latest_bootstrap');
-    return record ? record.data : null;
+    if (record) return record.data;
   } catch {
-    return null;
+    // Fallback to localStorage below
   }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(FALLBACK_STATE_KEY);
+      if (raw) return JSON.parse(raw) as SalonBootstrapData;
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return null;
 }
